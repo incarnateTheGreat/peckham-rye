@@ -30,6 +30,7 @@ jobs:
             - name: Execute Tracker Script
               env:
                   DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+                  DATABASE_URL: ${{ secrets.DATABASE_URL }}
               run: python track_jobs.py
 
             - name: Upload Logs (if failed)

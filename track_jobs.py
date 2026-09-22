@@ -4,6 +4,8 @@ import re
 import zoneinfo
 from datetime import datetime
 import requests
+import psycopg2
+from psycopg2.extras import execute_values
 
 # =============================================================================
 # CONFIGURATION & THRESHOLDS
@@ -78,22 +80,71 @@ EOR_SIGNALS = [
 # =============================================================================
 # STATE MANAGEMENT
 # =============================================================================
-def load_seen_jobs() -> set:
-  if os.path.exists(SEEN_JOBS_FILE):
-    try:
-      with open(SEEN_JOBS_FILE, "r", encoding="utf-8") as f:
-        return set(json.load(f))
-    except Exception as e:
-      print(f"Error reading {SEEN_JOBS_FILE}: {e}")
-  return set()
+def get_db_connection():
+  """Connect to NeonDB PostgreSQL"""
+  db_url = os.environ.get("DATABASE_URL")
+  if not db_url:
+    print("ERROR: DATABASE_URL not set")
+    return None
+  return psycopg2.connect(db_url)
 
+def init_db():
+  """Create seen_jobs table if it doesn't exist"""
+  conn = get_db_connection()
+  if not conn:
+    return
+  try:
+    cursor = conn.cursor()
+    cursor.execute("""
+      CREATE TABLE IF NOT EXISTS seen_jobs (
+        job_id TEXT PRIMARY KEY,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    """)
+    conn.commit()
+    cursor.close()
+  except Exception as e:
+    print(f"Error creating table: {e}")
+  finally:
+    conn.close()
+
+def load_seen_jobs() -> set:
+  """Load seen job IDs from NeonDB"""
+  conn = get_db_connection()
+  if not conn:
+    return set()
+  try:
+    cursor = conn.cursor()
+    cursor.execute("SELECT job_id FROM seen_jobs")
+    return set(row[0] for row in cursor.fetchall())
+  except Exception as e:
+    print(f"Error loading from DB: {e}")
+    return set()
+  finally:
+    cursor.close()
+    conn.close()
 
 def save_seen_jobs(seen_jobs: set):
+  """Save seen job IDs to NeonDB"""
+  conn = get_db_connection()
+  if not conn:
+    return
   try:
-    with open(SEEN_JOBS_FILE, "w", encoding="utf-8") as f:
-      json.dump(list(seen_jobs), f, indent=2)
+    cursor = conn.cursor()
+    if seen_jobs:
+      # Insert only new job IDs (ignore duplicates)
+      values = [(job_id,) for job_id in seen_jobs]
+      execute_values(
+        cursor,
+        "INSERT INTO seen_jobs (job_id) VALUES %s ON CONFLICT DO NOTHING",
+        values
+      )
+    conn.commit()
   except Exception as e:
-    print(f"Error writing to {SEEN_JOBS_FILE}: {e}")
+    print(f"Error saving to DB: {e}")
+  finally:
+    cursor.close()
+    conn.close()
 
 
 # =============================================================================
@@ -444,20 +495,22 @@ def check_lever(seen_jobs: set) -> list[dict]:
 # MAIN EXECUTION
 # =============================================================================
 if __name__ == "__main__":
-  seen_jobs = load_seen_jobs()
+    init_db()  # Initialize database on startup
+    seen_jobs = load_seen_jobs()
+    # ... rest of existing code
 
-  all_matches = []
-  all_matches.extend(check_ashby(seen_jobs))
-  all_matches.extend(check_greenhouse(seen_jobs))
-  all_matches.extend(check_lever(seen_jobs))
+    all_matches = []
+    all_matches.extend(check_ashby(seen_jobs))
+    all_matches.extend(check_greenhouse(seen_jobs))
+    all_matches.extend(check_lever(seen_jobs))
 
-  if all_matches:
-    print(f"Found {len(all_matches)} new matching roles. Dispatching alerts...")
-    send_discord_alerts(all_matches)
-    for m in all_matches:
-      seen_jobs.add(m["id"])
-    save_seen_jobs(seen_jobs)
-  else:
-    print("Execution complete. No new matching roles found.")
+    if all_matches:
+        print(f"Found {len(all_matches)} new matching roles. Dispatching alerts...")
+        send_discord_alerts(all_matches)
+        for m in all_matches:
+            seen_jobs.add(m["id"])
+        save_seen_jobs(seen_jobs)
+    else:
+        print("Execution complete. No new matching roles found.")
 
 
