@@ -255,56 +255,57 @@ def send_discord_alert(matches: List[Dict[str, str]]) -> None:
         return
     
     try:
-        # Build embeds - split jobs across multiple embeds if needed (Discord limit: 10 embeds per message)
+        # Build embeds - Discord limits: 10 embeds per message, 6000 chars per embed
         embeds = []
-        jobs_per_embed = 5  # 5 jobs per embed to stay under Discord's 1024 char field limit
+        jobs_per_embed = 2  # 2 jobs per embed to stay under 6000 char limit
         
         for i in range(0, len(matches), jobs_per_embed):
             batch = matches[i:i + jobs_per_embed]
             
-            # Build job list for this batch
-            job_list = "\n".join([
-                f"**[{m['company']}]** {m['title']}\n{m['location']} | {m['source']}\n{m['url']}"
-                for m in batch
-            ])
+            # Build job list for this batch - compact format
+            job_lines = []
+            for m in batch:
+                # Truncate long titles
+                title = m['title'][:80] + "..." if len(m['title']) > 80 else m['title']
+                line = f"[{m['company']}] {title}\n🔗 {m['url']}"
+                job_lines.append(line)
             
-            # Ensure field value doesn't exceed 1024 chars
-            if len(job_list) > 1000:
-                job_list = job_list[:997] + "..."
+            job_list = "\n\n".join(job_lines)
+            
+            batch_num = (i // jobs_per_embed) + 1
+            total_batches = (len(matches) + jobs_per_embed - 1) // jobs_per_embed
             
             embed = {
-                "title": f"🚨 Remote Senior Engineering Roles ({len(matches)} Total)" if i == 0 else f"Jobs ({i//jobs_per_embed + 1})",
-                "description": f"Batch {i//jobs_per_embed + 1} of {(len(matches) + jobs_per_embed - 1)//jobs_per_embed}" if i > 0 else f"Found {len(matches)} matching job(s) as of {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
+                "title": f"🚨 Remote Senior Roles ({len(matches)} Found)" if i == 0 else f"Batch {batch_num}/{total_batches}",
+                "description": f"Found {len(matches)} matching job(s) on {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}" if i == 0 else f"Batch {batch_num} of {total_batches}",
                 "color": 3066993,  # Green
                 "fields": [
                     {
-                        "name": "Matching Jobs",
+                        "name": f"Jobs {i+1}-{min(i+jobs_per_embed, len(matches))}",
                         "value": job_list,
                         "inline": False
                     }
                 ]
             }
             
-            # Add footer only to last embed
-            if i + jobs_per_embed >= len(matches):
-                embed["footer"] = {
-                    "text": f"Total: {len(matches)} matching roles found"
-                }
-            
             embeds.append(embed)
         
-        # Send message with embeds
-        payload = {
-            "username": "Remote Job Tracker",
-            "avatar_url": "https://cdn-icons-png.flaticon.com/512/1087/1087815.png",
-            "embeds": embeds[:10]  # Discord limit: 10 embeds per message
-        }
+        # Send all embeds (max 10 per message)
+        batches_of_embeds = [embeds[j:j+10] for j in range(0, len(embeds), 10)]
         
-        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        if res.status_code in [200, 204]:
-            logger.info(f"✓ Successfully posted {len(matches)} jobs to Discord ({len(embeds)} embed(s))")
-        else:
-            logger.error(f"Failed to post to Discord: {res.status_code} - {res.text}")
+        for batch_embeds in batches_of_embeds:
+            payload = {
+                "username": "Remote Job Tracker",
+                "avatar_url": "https://cdn-icons-png.flaticon.com/512/1087/1087815.png",
+                "embeds": batch_embeds
+            }
+            
+            res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+            if res.status_code not in [200, 204]:
+                logger.error(f"Failed to post to Discord: {res.status_code} - {res.text}")
+                return
+        
+        logger.info(f"✓ Successfully posted {len(matches)} jobs to Discord ({len(embeds)} embed(s))")
     except requests.exceptions.RequestException as e:
         logger.error(f"Error sending Discord webhook: {e}")
     except Exception as e:

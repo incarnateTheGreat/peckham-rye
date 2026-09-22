@@ -9,6 +9,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: Script exits immediately with this error.
 
 **Causes**:
+
 - GitHub secret not configured
 - Secret name is incorrect (`DISCORD_WEBHOOK_URL`)
 - Secret deleted accidentally
@@ -18,7 +19,6 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 1. **Verify secret exists in GitHub**:
    - GitHub repo → Settings → Secrets and variables → Actions
    - Look for `DISCORD_WEBHOOK_URL` in the list
-   
 2. **If missing, add it**:
    - Click "New repository secret"
    - Name: `DISCORD_WEBHOOK_URL` (exact case)
@@ -37,6 +37,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: Script runs successfully but finds 0 jobs.
 
 **Causes**:
+
 1. Job filters are too strict
 2. No companies currently have matching open roles
 3. Keywords don't match available positions
@@ -45,6 +46,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **Solutions**:
 
 1. **Make filters less strict**:
+
    ```python
    # Add more variations of titles/levels
    TITLE_LEVEL_KEYWORDS = [
@@ -52,7 +54,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
        "iv", "v", "vi",  # leveling systems
        "level",  # generic level indicators
    ]
-   
+
    TITLE_ROLE_KEYWORDS = [
        "software", "engineer", "developer",  # broader terms
        "platform", "systems", "devops",
@@ -65,11 +67,13 @@ Solutions for common issues when running the Remote Tech Job Tracker.
    - Adjust keywords to match what's posted
 
 3. **Disable exclude keywords temporarily**:
+
    ```python
    TITLE_EXCLUDE_KEYWORDS = []  # Comment out temporarily
    ```
 
 4. **Add debug logging**:
+
    ```python
    # In check_greenhouse(), add after line ~120:
    if is_senior or is_role or is_location:
@@ -90,6 +94,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: Workflow completes successfully, but no Discord notification appears.
 
 **Causes**:
+
 1. Jobs matched but Discord webhook failed silently
 2. Webhook URL is inactive/deleted
 3. Bot doesn't have permission to post to channel
@@ -104,12 +109,14 @@ Solutions for common issues when running the Remote Tech Job Tracker.
    - Look for "Successfully posted X jobs" or error messages
 
 2. **Test Discord webhook manually**:
+
    ```bash
    # Replace with your webhook URL
    curl -X POST https://discordapp.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
      -H "Content-Type: application/json" \
      -d '{"content":"Test message"}'
    ```
+
    - Should see "Test message" in your Discord channel
    - If not, webhook is dead - recreate it in Step 1
 
@@ -136,6 +143,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: Workflow execution time creeps up to 2-3 minutes.
 
 **Causes**:
+
 1. API responses are slow
 2. Many companies added to tracking
 3. GitHub runner experiencing high load
@@ -149,6 +157,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
    - If one is notably slow, consider removing it
 
 2. **Reduce companies being tracked**:
+
    ```python
    GREENHOUSE_BOARDS = [
        "datadog",
@@ -160,14 +169,16 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 3. **Set request timeouts**:
    - Already set to 10 seconds
    - Reduce to 5 seconds if needed (trade-off: might miss slow APIs)
+
    ```python
    res = requests.get(url, timeout=5)  # was 10
    ```
 
 4. **Run checks in parallel** (advanced):
+
    ```python
    from concurrent.futures import ThreadPoolExecutor
-   
+
    with ThreadPoolExecutor(max_workers=5) as executor:
        futures = [
            executor.submit(check_greenhouse),
@@ -188,6 +199,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: GitHub Actions workflow shows import error.
 
 **Causes**:
+
 - `requirements.txt` modified or deleted
 - Dependencies not installed in workflow
 - Wrong Python version
@@ -195,10 +207,13 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **Solutions**:
 
 1. **Verify requirements.txt exists**:
+
    ```bash
    cat requirements.txt
    ```
+
    Should show:
+
    ```
    requests>=2.31.0
    python-dotenv>=1.0.0
@@ -207,20 +222,23 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 2. **Verify workflow installs dependencies**:
    - Check `.github/workflows/daily_tracker.yml`
    - Should have:
+
    ```yaml
    - name: Install Dependencies
      run: pip install -r requirements.txt
    ```
 
 3. **Verify Python version** (in workflow):
+
    ```yaml
    - name: Set up Python
      uses: actions/setup-python@v5
      with:
-       python-version: '3.11'  # Should be 3.11+
+       python-version: "3.11" # Should be 3.11+
    ```
 
 4. **Test locally with fresh Python**:
+
    ```bash
    python3 -m venv test_venv
    source test_venv/bin/activate
@@ -242,6 +260,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: Same job posted multiple times in multiple notifications.
 
 **Causes**:
+
 1. Deduplication logic not working
 2. Job IDs are not unique across runs
 3. Multiple runs triggered accidentally
@@ -253,6 +272,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
    - Verify job IDs are unique format
 
 2. **Inspect job IDs in logs**:
+
    ```python
    # Temporarily add to track_jobs.py:
    unique_jobs = deduplicate_jobs(all_jobs)
@@ -275,6 +295,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: GitHub Actions logs show rate limiting error.
 
 **Causes**:
+
 - Too many requests to same API
 - Automated tools hammering the API
 - Shared IP address hitting limits
@@ -282,18 +303,20 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **Solutions**:
 
 1. **Add delays between requests**:
+
    ```python
    import time
-   
+
    for board in GREENHOUSE_BOARDS:
        # ... make request ...
        time.sleep(0.5)  # 500ms delay between companies
    ```
 
 2. **Implement exponential backoff**:
+
    ```python
    import time
-   
+
    max_retries = 3
    for attempt in range(max_retries):
        try:
@@ -324,6 +347,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: Script passes locally but fails in GitHub Actions.
 
 **Causes**:
+
 1. Different Python version
 2. GitHub secret not set
 3. Network difference (GitHub IP sometimes blocked)
@@ -332,15 +356,17 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **Solutions**:
 
 1. **Verify Python version matches**:
+
    ```bash
    # Locally:
    python3 --version  # e.g., 3.11.6
-   
+
    # In workflow (.github/workflows/daily_tracker.yml):
    python-version: '3.11'  # Should match
    ```
 
 2. **Test with exact dependencies**:
+
    ```bash
    pip install -r requirements.txt --force-reinstall
    python3 track_jobs.py
@@ -348,6 +374,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 
 3. **Check secret is properly passed**:
    - Verify this in workflow:
+
    ```yaml
    - name: Execute Tracker Script
      env:
@@ -358,6 +385,7 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 4. **Test API connectivity from GitHub**:
    - Some company networks block GitHub's IP ranges
    - Add this to workflow temporarily:
+
    ```yaml
    - name: Test Connectivity
      run: |
@@ -377,18 +405,21 @@ Solutions for common issues when running the Remote Tech Job Tracker.
 **When it occurs**: Script fails looking for python-dotenv.
 
 **Causes**:
+
 - `python-dotenv` not in requirements.txt
 - Local venv missing the package
 
 **Solutions**:
 
 1. **Add to requirements.txt**:
+
    ```
    requests>=2.31.0
    python-dotenv>=1.0.0
    ```
 
 2. **Reinstall locally**:
+
    ```bash
    source venv/bin/activate
    pip install -r requirements.txt --force-reinstall
@@ -410,6 +441,7 @@ Note: The template already includes this, but check if it was accidentally remov
 **When it occurs**: Discord embed displays incorrectly (truncated, misaligned, etc.).
 
 **Causes**:
+
 1. Payload exceeds Discord 2000 character limit
 2. Job titles contain special Discord characters
 3. URLs not properly formatted
@@ -417,17 +449,20 @@ Note: The template already includes this, but check if it was accidentally remov
 **Solutions**:
 
 1. **Limit jobs displayed**:
+
    ```python
    # In send_discord_alert():
    display_matches = matches[:10]  # Show only first 10, was 15
    ```
 
 2. **Escape special characters**:
+
    ```python
    title = job.get("title").replace("_", "\\_").replace("*", "\\*")
    ```
 
 3. **Shorten long URLs**:
+
    ```python
    from urllib.parse import urlparse
    url_short = urlparse(job.get("url")).netloc  # Just domain
@@ -448,6 +483,7 @@ Note: The template already includes this, but check if it was accidentally remov
 **When it occurs**: Script crashes when accessing job fields.
 
 **Causes**:
+
 - API response structure changed
 - Field name is different than expected
 - Job entry is missing a required field
@@ -455,15 +491,17 @@ Note: The template already includes this, but check if it was accidentally remov
 **Solutions**:
 
 1. **Use .get() with defaults**:
+
    ```python
    # Bad:
    title = job["title"]  # Crashes if missing
-   
+
    # Good:
    title = job.get("title", "No title")  # Safe fallback
    ```
 
 2. **Inspect raw API response**:
+
    ```python
    # Add debugging to scraper:
    res = requests.get(url)
@@ -492,6 +530,7 @@ Note: The template already includes this, but check if it was accidentally remov
 **When it occurs**: Workflow doesn't run at scheduled times.
 
 **Causes**:
+
 1. Schedule is wrong (cron syntax error)
 2. Repository is dormant (GitHub pauses workflows)
 3. Default branch not set to `main`
@@ -508,6 +547,7 @@ Note: The template already includes this, but check if it was accidentally remov
    - Make a commit at least once every 60 days
    - Or GitHub disables workflows
    - Add dummy commit if needed:
+
    ```bash
    git add .
    git commit --allow-empty -m "Keep workflow active"
@@ -551,6 +591,7 @@ Note: The template already includes this, but check if it was accidentally remov
    #   schedule:
    #     - cron: '0 9,21 * * *'
    ```
+
    - Only manual runs via "workflow_dispatch" work
    - More work to re-enable
 
@@ -567,4 +608,3 @@ Note: The template already includes this, but check if it was accidentally remov
 ---
 
 Happy debugging! 🐛
-

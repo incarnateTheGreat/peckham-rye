@@ -46,44 +46,44 @@ Add this to `track_jobs.py`:
 def check_linkedin() -> List[Dict[str, str]]:
     """Fetch jobs from LinkedIn Jobs API."""
     matches = []
-    
+
     # LinkedIn doesn't have a direct public API, but we can use unofficial endpoints
     # or integrate with their partnership program
-    
+
     linkedin_keywords = [
         "remote+senior+engineer+spain",
         "remote+staff+backend+europe",
         "remote+principal+frontend+emea",
     ]
-    
+
     for keyword_combo in linkedin_keywords:
         url = f"https://api.linkedin.com/v2/jobs?keywords={keyword_combo}"
         headers = {
             "Authorization": f"Bearer {os.environ.get('LINKEDIN_API_TOKEN', '')}",
         }
-        
+
         try:
             logger.info(f"Fetching LinkedIn jobs for: {keyword_combo}")
             res = requests.get(url, headers=headers, timeout=10)
             res.raise_for_status()
-            
+
             jobs = res.json().get("elements", [])
             logger.info(f"Found {len(jobs)} total jobs for query: {keyword_combo}")
-            
+
             for job in jobs:
                 title = job.get("title", "").lower()
                 location = job.get("location", {}).get("name", "").lower()
                 company = job.get("company", {}).get("name", "")
-                
+
                 # Skip if excluded keywords present
                 if any(k in title for k in TITLE_EXCLUDE_KEYWORDS):
                     continue
-                
+
                 # Check all three criteria
                 is_senior = any(k in title for k in TITLE_LEVEL_KEYWORDS)
                 is_role = any(k in title for k in TITLE_ROLE_KEYWORDS)
                 is_location = any(k in location for k in LOCATION_KEYWORDS)
-                
+
                 if is_senior and is_role and is_location:
                     matches.append({
                         "company": company,
@@ -94,12 +94,12 @@ def check_linkedin() -> List[Dict[str, str]]:
                         "id": f"linkedin_{job.get('id')}",
                     })
                     logger.info(f"  ✓ Matched: {job.get('title')} at {company}")
-        
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching LinkedIn jobs for '{keyword_combo}': {e}")
         except Exception as e:
             logger.error(f"Unexpected error processing LinkedIn: {e}")
-    
+
     return matches
 ```
 
@@ -113,23 +113,23 @@ def main():
     logger.info("=" * 70)
     logger.info("Starting Remote Tech Job Tracker")
     logger.info("=" * 70)
-    
+
     all_jobs = []
-    
+
     # Existing platforms
     logger.info("\n[1/5] Checking Greenhouse boards...")
     all_jobs.extend(check_greenhouse())
-    
+
     logger.info("\n[2/5] Checking Lever boards...")
     all_jobs.extend(check_lever())
-    
+
     logger.info("\n[3/5] Checking Ashby companies...")
     all_jobs.extend(check_ashby())
-    
+
     # NEW: LinkedIn
     logger.info("\n[4/5] Checking LinkedIn...")
     all_jobs.extend(check_linkedin())
-    
+
     # Rest of function remains the same
     logger.info("\n[5/5] Deduplicating results...")
     unique_jobs = deduplicate_jobs(all_jobs)
@@ -145,11 +145,12 @@ steps:
   - name: Execute Tracker Script
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      LINKEDIN_API_TOKEN: ${{ secrets.LINKEDIN_API_TOKEN }}  # NEW
+      LINKEDIN_API_TOKEN: ${{ secrets.LINKEDIN_API_TOKEN }} # NEW
     run: python track_jobs.py
 ```
 
 Then add the secret to GitHub:
+
 - GitHub repo → Settings → Secrets → New secret
 - Name: `LINKEDIN_API_TOKEN`
 - Value: Your LinkedIn API token
@@ -183,35 +184,35 @@ Use this template when adding new platforms:
 def check_[platform_name]() -> List[Dict[str, str]]:
     """Fetch jobs from [Platform Name]."""
     matches = []
-    
+
     companies_or_queries = [
         "company1",
         "company2",
     ]
-    
+
     for company in companies_or_queries:
         url = f"https://api.[platform].com/jobs?q={company}"
         try:
             logger.info(f"Fetching [Platform] jobs for: {company}")
             res = requests.get(url, timeout=10)
             res.raise_for_status()
-            
+
             jobs = res.json().get("jobs", [])  # Adjust based on API response
             logger.info(f"Found {len(jobs)} total jobs for {company}")
-            
+
             for job in jobs:
                 title = job.get("title", "").lower()
                 location = job.get("location", "").lower()  # Adjust key
-                
+
                 # Skip excluded keywords
                 if any(k in title for k in TITLE_EXCLUDE_KEYWORDS):
                     continue
-                
+
                 # Filter by criteria
                 is_senior = any(k in title for k in TITLE_LEVEL_KEYWORDS)
                 is_role = any(k in title for k in TITLE_ROLE_KEYWORDS)
                 is_location = any(k in location for k in LOCATION_KEYWORDS)
-                
+
                 if is_senior and is_role and is_location:
                     matches.append({
                         "company": company.capitalize(),
@@ -222,12 +223,12 @@ def check_[platform_name]() -> List[Dict[str, str]]:
                         "id": f"[platform]_{company}_{job.get('id')}",
                     })
                     logger.info(f"  ✓ Matched: {job.get('title')} at {company}")
-        
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching [Platform] for '{company}': {e}")
         except Exception as e:
             logger.error(f"Unexpected error processing [Platform]: {e}")
-    
+
     return matches
 ```
 
@@ -273,17 +274,20 @@ def check_[platform_name]() -> List[Dict[str, str]]:
 Some companies publish job feeds:
 
 **Example: Stripe**
+
 ```python
 # Stripe's careers API
 url = "https://stripe.com/careers-api/jobs"
 ```
 
 **Example: GitHub**
+
 ```python
 url = "https://api.github.com/repos/github/careers/contents/jobs.json"
 ```
 
 **Recommended approach:**
+
 - Add 5-10 direct company APIs
 - Each company that publishes jobs should have a dedicated scraper
 - Combine with ATS platforms for comprehensive coverage
@@ -298,10 +302,10 @@ url = "https://api.github.com/repos/github/careers/contents/jobs.json"
 def test_check_linkedin():
     """Test LinkedIn scraper function."""
     jobs = check_linkedin()
-    
+
     # Verify return type
     assert isinstance(jobs, list)
-    
+
     # Verify structure of returned jobs
     if jobs:
         job = jobs[0]
@@ -311,7 +315,7 @@ def test_check_linkedin():
         assert "location" in job
         assert "source" in job
         assert "id" in job
-    
+
     print(f"✓ LinkedIn scraper returned {len(jobs)} jobs")
 
 # Run test
@@ -320,6 +324,7 @@ if __name__ == "__main__":
 ```
 
 Run with:
+
 ```bash
 python3 track_jobs.py tests  # or just call test_check_linkedin()
 ```
@@ -372,6 +377,7 @@ As you add more platforms, execution time may increase. Current targets:
 - **Problematic**: > 2 minutes per run
 
 If you exceed 60 seconds:
+
 1. Add request timeouts (already done: `timeout=10`)
 2. Implement parallel requests using `concurrent.futures`
 3. Cache results for 1-2 hours
@@ -387,7 +393,7 @@ def main():
         lever_future = executor.submit(check_lever)
         ashby_future = executor.submit(check_ashby)
         linkedin_future = executor.submit(check_linkedin)
-        
+
         all_jobs = []
         all_jobs.extend(greenhouse_future.result())
         all_jobs.extend(lever_future.result())
@@ -410,6 +416,7 @@ def main():
 ## Questions?
 
 If an API doesn't have public documentation:
+
 1. Check if there's an unofficial API (use at your own risk)
 2. Look for open-source libraries (e.g., `linkedin-api`, `indeed-scraper`)
 3. Consider web scraping as last resort (respect `robots.txt`)
@@ -417,4 +424,3 @@ If an API doesn't have public documentation:
 ---
 
 Happy extending! 🚀
-

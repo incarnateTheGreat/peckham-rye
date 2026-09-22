@@ -14,12 +14,15 @@ This project runs a **daily cron job** via GitHub Actions (twice daily at 9 AM a
 ### Target Companies
 
 #### Greenhouse Boards
+
 - Datadog, Cloudflare, GitLab, PostHog, Canonical, Elastic, Grafana, Figma, Notion
 
 #### Lever Boards
+
 - Stripe, Anthropic, Typeform
 
 #### Ashby
+
 - Ramp, Rippling, Gemini
 
 ## Quick Start
@@ -57,6 +60,7 @@ python track_jobs.py
 ```
 
 **Expected output:**
+
 - Console logs showing fetched jobs, filtering criteria, and Discord posting result
 - Discord embed in your #job-alerts channel with matching roles
 
@@ -121,29 +125,31 @@ Edit `.github/workflows/daily_tracker.yml`:
 
 ```yaml
 schedule:
-  - cron: '0 9,21 * * *'  # Change these times (cron format, UTC)
+  - cron: "0 9,21 * * *" # Change these times (cron format, UTC)
 ```
 
 **Common cron patterns:**
+
 - `'0 9 * * *'` → Daily at 9 AM UTC
 - `'0 */6 * * *'` → Every 6 hours
 - `'0 8,14,20 * * *'` → 3 times daily (8 AM, 2 PM, 8 PM UTC)
 
 ## Supported ATS Platforms
 
-| Platform | Status | Companies | API Type |
-|----------|--------|-----------|----------|
-| **Greenhouse** | ✅ Active | 9+ | Public JSON API |
-| **Lever** | ✅ Active | 3+ | Public JSON API |
-| **Ashby** | ✅ Active | 3+ | Public JSON API |
-| **LinkedIn** | 🚧 Planned | N/A | Scraping (rate-limited) |
-| **Direct APIs** | 🚧 Planned | TBD | Company-specific |
+| Platform        | Status     | Companies | API Type                |
+| --------------- | ---------- | --------- | ----------------------- |
+| **Greenhouse**  | ✅ Active  | 9+        | Public JSON API         |
+| **Lever**       | ✅ Active  | 3+        | Public JSON API         |
+| **Ashby**       | ✅ Active  | 3+        | Public JSON API         |
+| **LinkedIn**    | 🚧 Planned | N/A       | Scraping (rate-limited) |
+| **Direct APIs** | 🚧 Planned | TBD       | Company-specific        |
 
 ## Expanding to New Platforms
 
 To add a new job board scraper:
 
 1. **Create a new scraper function** following the existing pattern:
+
    ```python
    def check_[platform]() -> List[Dict[str, str]]:
        """Fetch jobs from [platform]."""
@@ -161,6 +167,7 @@ To add a new job board scraper:
    ```
 
 2. **Add to main() orchestration**:
+
    ```python
    all_jobs.extend(check_[platform]())
    ```
@@ -183,20 +190,24 @@ peckham-rye/
 ## Troubleshooting
 
 ### "DISCORD_WEBHOOK_URL environment variable is missing"
+
 - ❌ You forgot to add the secret in GitHub Settings
 - ✅ Solution: Go to Repo → Settings → Secrets → Add DISCORD_WEBHOOK_URL
 
 ### No jobs appear in Discord
+
 - Check the GitHub Actions logs (Actions tab → workflow run → logs)
 - Verify your keyword filters match your target roles
 - Make sure at least one target company actually has open roles
 
 ### Workflow times seem wrong
+
 - GitHub Actions cron is in **UTC timezone**
 - Adjust the `cron` schedule in `.github/workflows/daily_tracker.yml`
 - Test with `workflow_dispatch` (manual trigger) to verify
 
 ### API rate limiting
+
 - Greenhouse & Lever allow generous rate limits (typically 100+ requests/min)
 - Ashby is similar, but monitor logs for 429 responses
 - If needed, add delays: `time.sleep(0.1)` between requests
@@ -204,12 +215,14 @@ peckham-rye/
 ## Monitoring & Logs
 
 ### View execution logs:
+
 1. Go to repo → Actions tab
 2. Click on workflow run
 3. Click "run-tracker" job
 4. View all step outputs
 
 ### Disable notifications temporarily:
+
 - Comment out `send_discord_alert()` call in `main()`
 - Or don't set `DISCORD_WEBHOOK_URL` secret (script will skip Discord)
 

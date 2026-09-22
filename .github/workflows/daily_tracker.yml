@@ -1,40 +1,40 @@
 name: Daily Remote Job Tracker
 
 on:
-  schedule:
-    # Runs twice daily at 09:00 UTC and 21:00 UTC
-    - cron: '0 9,21 * * *'
-  workflow_dispatch:
+    schedule:
+        # Runs twice daily at 09:00 UTC and 21:00 UTC
+        - cron: "0 9,21 * * *"
+    workflow_dispatch:
 
 permissions:
-  contents: read
+    contents: read
 
 jobs:
-  run-tracker:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    run-tracker:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
 
-    steps:
-      - name: Check out Repository
-        uses: actions/checkout@v4
+        steps:
+            - name: Check out Repository
+              uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+                  cache: "pip"
 
-      - name: Install Dependencies
-        run: pip install -r requirements.txt
+            - name: Install Dependencies
+              run: pip install -r requirements.txt
 
-      - name: Execute Tracker Script
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python track_jobs.py
-        
-      - name: Upload Logs (if failed)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: job-tracker-logs
-          retention-days: 7
+            - name: Execute Tracker Script
+              env:
+                  DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+              run: python track_jobs.py
+
+            - name: Upload Logs (if failed)
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: job-tracker-logs
+                  retention-days: 7

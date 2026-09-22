@@ -16,6 +16,7 @@ This guide walks through all the steps to get the Remote Tech Job Tracker runnin
 ### 1a. Create or Use Existing Discord Server
 
 If you don't have a Discord server:
+
 1. Open Discord (https://discord.com)
 2. Click the "+" icon in the left sidebar
 3. Select "Create My Own" → "For me and my friends"
@@ -55,6 +56,7 @@ ls -la
 ```
 
 You should see:
+
 ```
 .github/
   └── workflows/
@@ -98,11 +100,13 @@ python3 track_jobs.py
 ```
 
 **Expected output:**
+
 - Console logs showing job fetching from Greenhouse, Lever, Ashby
 - Logs showing which roles matched your filters
 - Your Discord #job-alerts channel receives an embedded message with matching jobs
 
 If you see errors, check:
+
 - Discord webhook URL is correct
 - Network connection is stable
 - No typos in the .env file
@@ -142,6 +146,7 @@ git push -u origin main
 ```
 
 **Note**: If prompted for authentication, use a GitHub Personal Access Token (PAT):
+
 1. Go to GitHub Settings → Developer settings → Personal access tokens
 2. Create token with `repo` scope
 3. Use token as password when prompted
@@ -189,6 +194,7 @@ Go to https://github.com/YOUR_USERNAME/remote-job-tracker and verify all files a
 3. Click on **"run-tracker"** job to see detailed output
 
 **Logs should show:**
+
 ```
 ✓ Virtual environment created and dependencies installed
 Fetching Greenhouse board: datadog
@@ -221,6 +227,7 @@ Matching Jobs:
 ## STEP 6: Schedule Automatic Runs
 
 The workflow is now **automatically scheduled** to run twice daily:
+
 - **09:00 UTC** (5 AM US Eastern, 10 AM UK)
 - **21:00 UTC** (5 PM US Eastern, 10 PM UK)
 
@@ -230,18 +237,20 @@ The workflow is now **automatically scheduled** to run twice daily:
 2. Change the `cron` line:
    ```yaml
    schedule:
-     - cron: '0 9,21 * * *'  # Change these times
+     - cron: "0 9,21 * * *" # Change these times
    ```
 
 **Cron format:** `minute hour day month day_of_week`
 
 Common examples:
+
 - `'0 9 * * *'` → Daily at 9 AM UTC
 - `'0 8,14,20 * * *'` → 3x daily: 8 AM, 2 PM, 8 PM UTC
 - `'0 */6 * * *'` → Every 6 hours
 - `'0 9 * * 1-5'` → Weekdays only at 9 AM UTC
 
 Save and commit:
+
 ```bash
 git add .github/workflows/daily_tracker.yml
 git commit -m "Update workflow schedule"
@@ -303,12 +312,12 @@ Changes will take effect on the next scheduled run.
 
 ### Common Issues
 
-| Issue | Solution |
-|-------|----------|
-| "DISCORD_WEBHOOK_URL missing" | Verify secret was added in GitHub Settings → Secrets |
-| No jobs in Discord | Check filtering keywords - maybe no matches today |
-| Workflow error | Check GitHub Actions logs for API errors or timeouts |
-| Jobs appear in console but not Discord | Verify Discord webhook URL is correct and active |
+| Issue                                  | Solution                                             |
+| -------------------------------------- | ---------------------------------------------------- |
+| "DISCORD_WEBHOOK_URL missing"          | Verify secret was added in GitHub Settings → Secrets |
+| No jobs in Discord                     | Check filtering keywords - maybe no matches today    |
+| Workflow error                         | Check GitHub Actions logs for API errors or timeouts |
+| Jobs appear in console but not Discord | Verify Discord webhook URL is correct and active     |
 
 ### Disable Notifications Temporarily
 
@@ -331,6 +340,7 @@ Or just delete the GitHub secret - script will gracefully exit.
 ### Database Caching (Future Enhancement)
 
 To track new vs. existing jobs, you could:
+
 - Store job IDs in a CSV file
 - Compare each run to detect new postings only
 - Send notifications only for new jobs
@@ -338,6 +348,7 @@ To track new vs. existing jobs, you could:
 ### Email Fallback
 
 Instead of Discord, send filtered jobs via email:
+
 - Use AWS SNS or SendGrid API
 - Requires API token as secret
 - Fallback if Discord is down
@@ -345,6 +356,7 @@ Instead of Discord, send filtered jobs via email:
 ### Slack Integration
 
 Many teams prefer Slack - Slack incoming webhooks work similarly to Discord:
+
 ```python
 # Replace DISCORD_WEBHOOK_URL with SLACK_WEBHOOK_URL
 # Slack attachment format is JSON-compatible
@@ -385,4 +397,3 @@ Many teams prefer Slack - Slack incoming webhooks work similarly to Discord:
 - **Check ATS API status** if getting connection errors
 
 Happy job hunting! 🎯
-
