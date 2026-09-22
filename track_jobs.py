@@ -254,22 +254,27 @@ def send_discord_alert(matches: List[Dict[str, str]]) -> None:
         logger.info("No matching roles found today.")
         return
     
-    # Limit to 15 jobs to avoid Discord payload limits
-    display_matches = matches[:15]
-    
-    # Build embed fields for better formatting
-    job_list = "\n".join([
-        f"🔗 **[{m['company']}]** — {m['title']}\n   📍 {m['location']} | Source: {m['source']}\n   {m['url']}"
-        for m in display_matches
-    ])
-    
-    payload = {
-        "username": "Remote Job Tracker",
-        "avatar_url": "https://cdn-icons-png.flaticon.com/512/1087/1087815.png",
-        "embeds": [
-            {
-                "title": f"🚨 Remote Senior Engineering Roles ({len(matches)} Found)",
-                "description": f"Found {len(matches)} matching job(s) as of {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
+    try:
+        # Build embeds - split jobs across multiple embeds if needed (Discord limit: 10 embeds per message)
+        embeds = []
+        jobs_per_embed = 5  # 5 jobs per embed to stay under Discord's 1024 char field limit
+        
+        for i in range(0, len(matches), jobs_per_embed):
+            batch = matches[i:i + jobs_per_embed]
+            
+            # Build job list for this batch
+            job_list = "\n".join([
+                f"**[{m['company']}]** {m['title']}\n{m['location']} | {m['source']}\n{m['url']}"
+                for m in batch
+            ])
+            
+            # Ensure field value doesn't exceed 1024 chars
+            if len(job_list) > 1000:
+                job_list = job_list[:997] + "..."
+            
+            embed = {
+                "title": f"🚨 Remote Senior Engineering Roles ({len(matches)} Total)" if i == 0 else f"Jobs ({i//jobs_per_embed + 1})",
+                "description": f"Batch {i//jobs_per_embed + 1} of {(len(matches) + jobs_per_embed - 1)//jobs_per_embed}" if i > 0 else f"Found {len(matches)} matching job(s) as of {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
                 "color": 3066993,  # Green
                 "fields": [
                     {
@@ -277,22 +282,33 @@ def send_discord_alert(matches: List[Dict[str, str]]) -> None:
                         "value": job_list,
                         "inline": False
                     }
-                ],
-                "footer": {
-                    "text": "If more than 15 jobs found, check the job tracking board for full list."
-                }
+                ]
             }
-        ]
-    }
-    
-    try:
+            
+            # Add footer only to last embed
+            if i + jobs_per_embed >= len(matches):
+                embed["footer"] = {
+                    "text": f"Total: {len(matches)} matching roles found"
+                }
+            
+            embeds.append(embed)
+        
+        # Send message with embeds
+        payload = {
+            "username": "Remote Job Tracker",
+            "avatar_url": "https://cdn-icons-png.flaticon.com/512/1087/1087815.png",
+            "embeds": embeds[:10]  # Discord limit: 10 embeds per message
+        }
+        
         res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         if res.status_code in [200, 204]:
-            logger.info(f"✓ Successfully posted {len(matches)} jobs to Discord")
+            logger.info(f"✓ Successfully posted {len(matches)} jobs to Discord ({len(embeds)} embed(s))")
         else:
             logger.error(f"Failed to post to Discord: {res.status_code} - {res.text}")
     except requests.exceptions.RequestException as e:
         logger.error(f"Error sending Discord webhook: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error formatting Discord message: {e}")
 
 # ============================================================================
 # MAIN EXECUTION
