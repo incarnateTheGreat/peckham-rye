@@ -2,8 +2,8 @@ name: Daily Remote Job Tracker
 
 on:
     schedule:
-        # Runs twice daily at 09:00 UTC and 21:00 UTC
-        - cron: "0 9,21 * * *"
+        # Runs 4x daily at 03:00, 09:00, 15:00, 21:00 UTC (every 6 hours)
+        - cron: "0 3,9,15,21 * * *"
     workflow_dispatch:
 
 permissions:

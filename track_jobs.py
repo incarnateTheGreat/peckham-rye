@@ -19,9 +19,34 @@ MIN_SALARY_CAD = 200_000  # Staff/Principal & Senior remote target for Canada
 MIN_SALARY_EUR = 130_000
 
 # Target Company Slugs (Add or modify companies here)
-ASHBY_BOARDS = ["linear", "ramp", "vanta", "sentry"]
-GREENHOUSE_BOARDS = ["stripe", "figma", "cloudflare", "datadog"]
-LEVER_BOARDS = ["postman", "vercel"]
+# FRONTEND-HEAVY + FULLSTACK COMPANIES
+ASHBY_BOARDS = [
+    "linear", "ramp", "vanta", "sentry",
+    # React/Frontend focused
+    "retool", "supabase", "clerk", "plane", "n8n",
+    # Sports & Analytics
+    "statsbomb", "sportradar",
+    # Aviation & Aerospace
+    "archer-aviation", "joby-aviation", "volocopter", "lilium",
+]
+GREENHOUSE_BOARDS = [
+    "stripe", "figma", "cloudflare", "datadog",
+    # React/Fullstack ecosystem
+    "chakra-ui", "hasura", "prisma", "remix",
+    # Aviation/Aerospace/Flight
+    "bell-flight", "sikorsky", "garmin",
+    # Sports Tech
+    "genius-sports", "opta-sports", "eleven-sports",
+]
+LEVER_BOARDS = [
+    "postman", "vercel",
+    # Sports & Data
+    "arcane", "statsbomb",
+    # Aviation/Aerospace
+    "archer", "joby",
+    # React-native ecosystem
+    "expo", "react-native",
+]
 WORKABLE_BOARDS = []
 
 # 1. Title & Role Keyword Rules
@@ -30,11 +55,15 @@ INCLUDE_ROLE_KEYWORDS = [
     "fullstack",
     "frontend",
     "front end",
+    "react",
     "software engineer",
     "product engineer",
     "ui engineer",
     "web engineer",
     "application engineer",
+    "typescript",
+    "vue.js",
+    "next.js",
 ]
 HIGH_LEVEL_KEYWORDS = ["staff", "principal", "lead"]
 EXCLUDE_TITLE_EXACT = [
@@ -42,6 +71,9 @@ EXCLUDE_TITLE_EXACT = [
     "devops engineer",
     "site reliability engineer",
     "infrastructure engineer",
+    "data engineer",  # Too niche for your needs
+    "machine learning",
+    "data science",
 ]
 
 # 2. Remote & EOR Signal Keywords
