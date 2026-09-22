@@ -50,20 +50,18 @@ ASHBY_COMPANIES = [
 
 # Keywords for Filtering
 TITLE_LEVEL_KEYWORDS = [
-    "senior", "staff", "lead", "principal", "architect", "expert",
-    "iv", "v", "vi",  # leveling systems
+    "staff", "principal", "architect",  # Removed "senior" and "lead" for stricter filtering
 ]
 
 TITLE_ROLE_KEYWORDS = [
-    "software", "frontend", "backend", "fullstack", "full-stack",
-    "platform", "systems", "infrastructure", "devops",
-    "react", "typescript", "python", "golang", "rust", "java",
-    "engineer", "developer",
+    "frontend", "fullstack", "full-stack", "backend",  # Only frontend, fullstack, backend
+    "react", "vue", "typescript", "typescript", "golang", "rust", "python", "java",
 ]
 
 TITLE_EXCLUDE_KEYWORDS = [
-    "junior", "intern", "entry", "support", "sales", "marketing",
-    "student",
+    "junior", "intern", "entry", "support", "sales", "marketing", "advocacy", "student",
+    "customer", "account", "solutions architect", "devops", "infrastructure", "sre",
+    "systems engineer", "platform engineer", "linux kernel", "hardware", "qa",
 ]
 
 LOCATION_KEYWORDS = [
@@ -245,7 +243,7 @@ def deduplicate_jobs(all_jobs: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return unique_jobs
 
 def send_discord_alert(matches: List[Dict[str, str]]) -> None:
-    """Send matched jobs to Discord webhook."""
+    """Send matched jobs to Discord webhook, grouped by company."""
     if not DISCORD_WEBHOOK_URL:
         logger.error("DISCORD_WEBHOOK_URL environment variable is missing.")
         sys.exit(1)
@@ -255,43 +253,48 @@ def send_discord_alert(matches: List[Dict[str, str]]) -> None:
         return
     
     try:
-        # Build embeds - Discord limits: 10 embeds per message, 6000 chars per embed
-        embeds = []
-        jobs_per_embed = 2  # 2 jobs per embed to stay under 6000 char limit
+        # Group jobs by company
+        from collections import defaultdict
+        jobs_by_company = defaultdict(list)
+        for job in matches:
+            jobs_by_company[job['company']].append(job)
         
-        for i in range(0, len(matches), jobs_per_embed):
-            batch = matches[i:i + jobs_per_embed]
+        # Create one embed per company
+        embeds = []
+        for company in sorted(jobs_by_company.keys()):
+            company_jobs = jobs_by_company[company]
             
-            # Build job list for this batch - compact format
+            # Build job list for this company
             job_lines = []
-            for m in batch:
+            for job in company_jobs:
                 # Truncate long titles
-                title = m['title'][:80] + "..." if len(m['title']) > 80 else m['title']
-                line = f"[{m['company']}] {title}\n🔗 {m['url']}"
+                title = job['title'][:75] + "..." if len(job['title']) > 75 else job['title']
+                line = f"• {title}\n  🔗 {job['url']}"
                 job_lines.append(line)
             
-            job_list = "\n\n".join(job_lines)
+            job_list = "\n".join(job_lines)
             
-            batch_num = (i // jobs_per_embed) + 1
-            total_batches = (len(matches) + jobs_per_embed - 1) // jobs_per_embed
-            
+            # Create embed for this company
             embed = {
-                "title": f"🚨 Remote Senior Roles ({len(matches)} Found)" if i == 0 else f"Batch {batch_num}/{total_batches}",
-                "description": f"Found {len(matches)} matching job(s) on {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}" if i == 0 else f"Batch {batch_num} of {total_batches}",
+                "title": f"🔷 {company} ({len(company_jobs)} open)",
+                "description": job_list,
                 "color": 3066993,  # Green
-                "fields": [
-                    {
-                        "name": f"Jobs {i+1}-{min(i+jobs_per_embed, len(matches))}",
-                        "value": job_list,
-                        "inline": False
-                    }
-                ]
+                "footer": {
+                    "text": f"{company} | {len(company_jobs)} matching role(s)"
+                }
             }
             
             embeds.append(embed)
         
-        # Send all embeds (max 10 per message)
-        batches_of_embeds = [embeds[j:j+10] for j in range(0, len(embeds), 10)]
+        # Create header embed
+        header_embed = {
+            "title": f"🚨 Remote Staff/Principal Engineer Roles ({len(matches)} Total)",
+            "description": f"Found {len(matches)} matching position(s) across {len(embeds)} companies\n{datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
+            "color": 16711680,  # Red
+        }
+        
+        # Send header + company embeds
+        batches_of_embeds = [[header_embed] + embeds[j:j+9] for j in range(0, len(embeds), 9)]
         
         for batch_embeds in batches_of_embeds:
             payload = {
@@ -305,7 +308,7 @@ def send_discord_alert(matches: List[Dict[str, str]]) -> None:
                 logger.error(f"Failed to post to Discord: {res.status_code} - {res.text}")
                 return
         
-        logger.info(f"✓ Successfully posted {len(matches)} jobs to Discord ({len(embeds)} embed(s))")
+        logger.info(f"✓ Successfully posted {len(matches)} jobs across {len(embeds)} companies")
     except requests.exceptions.RequestException as e:
         logger.error(f"Error sending Discord webhook: {e}")
     except Exception as e:
