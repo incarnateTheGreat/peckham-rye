@@ -361,7 +361,7 @@ def send_discord_alerts(matches: list[dict]):
     }
 
     try:
-      requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=10)
+      requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=15)
     except Exception as e:
       print(f"Failed to post alert for {m['id']}: {e}")
 
@@ -419,7 +419,7 @@ def check_ashby(seen_jobs: set) -> list[dict]:
   for board in ASHBY_BOARDS:
     url = f"https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=true"
     try:
-      resp = requests.get(url, timeout=10)
+      resp = requests.get(url, timeout=15)
       if resp.status_code != 200:
         continue
       data = resp.json()
@@ -453,7 +453,7 @@ def check_greenhouse(seen_jobs: set) -> list[dict]:
   for board in GREENHOUSE_BOARDS:
     url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true"
     try:
-      resp = requests.get(url, timeout=10)
+      resp = requests.get(url, timeout=15)
       if resp.status_code != 200:
         continue
       data = resp.json()
@@ -492,7 +492,7 @@ def check_lever(seen_jobs: set) -> list[dict]:
   for board in LEVER_BOARDS:
     url = f"https://api.lever.co/v0/postings/{board}?mode=json"
     try:
-      resp = requests.get(url, timeout=10)
+      resp = requests.get(url, timeout=15)
       if resp.status_code != 200:
         continue
       jobs = resp.json()
