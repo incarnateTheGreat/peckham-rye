@@ -28,6 +28,8 @@ ASHBY_BOARDS = [
     "statsbomb", "sportradar",
     # Aviation & Aerospace
     "archer-aviation", "joby-aviation", "volocopter", "lilium",
+    # Additional coverage
+    "figma", "notion", "zapier", "github", "gitlab", "gitlab-dev",
 ]
 GREENHOUSE_BOARDS = [
     "stripe", "figma", "cloudflare", "datadog",
@@ -37,6 +39,8 @@ GREENHOUSE_BOARDS = [
     "bell-flight", "sikorsky", "garmin",
     # Sports Tech
     "genius-sports", "opta-sports", "eleven-sports",
+    # Additional coverage
+    "airbnb", "pinterest", "twitch", "notion",
 ]
 LEVER_BOARDS = [
     "postman", "vercel",
@@ -46,6 +50,8 @@ LEVER_BOARDS = [
     "archer", "joby",
     # React-native ecosystem
     "expo", "react-native",
+    # Additional coverage
+    "github", "gitlab", "zapier",
 ]
 WORKABLE_BOARDS = []
 
@@ -56,7 +62,6 @@ INCLUDE_ROLE_KEYWORDS = [
     "frontend",
     "front end",
     "react",
-    "software engineer",
     "product engineer",
     "ui engineer",
     "web engineer",
@@ -74,6 +79,18 @@ EXCLUDE_TITLE_EXACT = [
     "data engineer",  # Too niche for your needs
     "machine learning",
     "data science",
+]
+
+# Description-level keywords: "Software Engineer" titles accepted ONLY if description contains these
+REQUIRE_IN_DESCRIPTION = [
+    "react",
+    "typescript",
+    "frontend",
+    "full stack",
+    "fullstack",
+    "next.js",
+    "remix",
+    "graphql",
 ]
 
 # 2. Remote & EOR Signal Keywords
@@ -121,7 +138,7 @@ def get_db_connection():
   return psycopg2.connect(db_url)
 
 def init_db():
-  """Create seen_jobs table if it doesn't exist"""
+  """Create seen_jobs and applications tables if they don't exist"""
   conn = get_db_connection()
   if not conn:
     return
@@ -131,6 +148,29 @@ def init_db():
       CREATE TABLE IF NOT EXISTS seen_jobs (
         job_id TEXT PRIMARY KEY,
         created_at TIMESTAMP DEFAULT NOW()
+      )
+    """)
+    cursor.execute("""
+      CREATE TABLE IF NOT EXISTS applications (
+        id SERIAL PRIMARY KEY,
+        job_id TEXT UNIQUE NOT NULL,
+        company TEXT NOT NULL,
+        role_title TEXT NOT NULL,
+        job_url TEXT,
+        applied_date TIMESTAMP DEFAULT NOW(),
+        current_stage TEXT DEFAULT 'applied',
+        quality_score INTEGER,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    """)
+    cursor.execute("""
+      CREATE TABLE IF NOT EXISTS applications_history (
+        id SERIAL PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        FOREIGN KEY (job_id) REFERENCES applications(job_id)
       )
     """)
     conn.commit()
@@ -179,12 +219,88 @@ def save_seen_jobs(seen_jobs: set):
     conn.close()
 
 
+def save_application(job_id: str, company: str, role_title: str, job_url: str, quality_score: int):
+  """Save application to tracking database"""
+  conn = get_db_connection()
+  if not conn:
+    return
+  try:
+    cursor = conn.cursor()
+    cursor.execute("""
+      INSERT INTO applications (job_id, company, role_title, job_url, quality_score)
+      VALUES (%s, %s, %s, %s, %s)
+      ON CONFLICT (job_id) DO NOTHING
+    """, (job_id, company, role_title, job_url, quality_score))
+    conn.commit()
+    cursor.close()
+  except Exception as e:
+    print(f"Error saving application: {e}")
+  finally:
+    conn.close()
+
+
+def update_application_stage(job_id: str, new_stage: str):
+  """Update application stage and record history"""
+  conn = get_db_connection()
+  if not conn:
+    return
+  try:
+    cursor = conn.cursor()
+    cursor.execute("""
+      UPDATE applications SET current_stage = %s WHERE job_id = %s
+    """, (new_stage, job_id))
+    cursor.execute("""
+      INSERT INTO applications_history (job_id, stage) VALUES (%s, %s)
+    """, (job_id, new_stage))
+    conn.commit()
+    cursor.close()
+  except Exception as e:
+    print(f"Error updating application stage: {e}")
+  finally:
+    conn.close()
+
+
+def load_applications() -> list[dict]:
+  """Load all applications for dashboard/analysis"""
+  conn = get_db_connection()
+  if not conn:
+    return []
+  try:
+    cursor = conn.cursor()
+    cursor.execute("""
+      SELECT id, job_id, company, role_title, job_url, applied_date, 
+             current_stage, quality_score FROM applications
+      ORDER BY applied_date DESC
+    """)
+    results = cursor.fetchall()
+    return [
+        {
+            "id": row[0],
+            "job_id": row[1],
+            "company": row[2],
+            "role_title": row[3],
+            "job_url": row[4],
+            "applied_date": row[5],
+            "current_stage": row[6],
+            "quality_score": row[7],
+        }
+        for row in results
+    ]
+  except Exception as e:
+    print(f"Error loading applications: {e}")
+    return []
+  finally:
+    cursor.close()
+    conn.close()
+
+
 # =============================================================================
 # FILTERING HELPER FUNCTIONS
 # =============================================================================
-def is_target_role(title: str) -> bool:
+def is_target_role(title: str, description: str = "") -> bool:
   """Filters role titles against target keywords while dropping unwanted domains."""
   t = title.lower().strip()
+  d = (description or "").lower()
 
   # Exclude exact unwanted engineering domains (DevOps, Platform, Infrastructure)
   if any(bad in t for bad in EXCLUDE_TITLE_EXACT):
@@ -192,7 +308,14 @@ def is_target_role(title: str) -> bool:
 
   # Require at least one target role keyword
   # Automatically handles "Staff Software Engineer", "Product Engineer", "Full Stack Engineer", etc.
-  return any(k in t for k in INCLUDE_ROLE_KEYWORDS)
+  if any(k in t for k in INCLUDE_ROLE_KEYWORDS):
+    return True
+  
+  # Fallback: Generic "Software Engineer" accepted ONLY if description has specific tech
+  if "software engineer" in t:
+    return any(keyword in d for keyword in REQUIRE_IN_DESCRIPTION)
+  
+  return False
 
 
 def is_fully_remote(location: str, workplace_type: str, description: str) -> bool:
@@ -286,6 +409,62 @@ def extract_key_signals(content: str) -> str:
   return ", ".join(found) if found else "Full Stack / Frontend Architecture"
 
 
+def calculate_job_quality_score(
+    title: str,
+    content: str,
+    salary_text: str,
+    salary_status: str,
+) -> int:
+  """
+  Calculate comprehensive job quality score (0-100).
+  
+  Factors:
+  - Tech stack match (35%): React, TypeScript, Next.js, GraphQL, etc.
+  - Level match (30%): Staff/Principal presence
+  - Salary fit (20%): Verified salary above target
+  - Role focus (15%): Fullstack/Frontend emphasis
+  """
+  score = 0
+  
+  # 1. Tech Stack Match (35 points max)
+  premium_techs = ["React", "TypeScript", "Next.js", "GraphQL", "FastAPI"]
+  good_techs = ["Node.js", "Python", "PostgreSQL", "Redis", "Vue.js"]
+  content_lower = content.lower()
+  title_lower = title.lower()
+  combined_text = f"{title_lower} {content_lower[:2000]}"
+  
+  premium_matches = sum(
+      1 for tech in premium_techs
+      if re.search(r"\b" + tech.lower() + r"\b", combined_text)
+  )
+  good_matches = sum(
+      1 for tech in good_techs
+      if re.search(r"\b" + tech.lower() + r"\b", combined_text)
+  )
+  
+  tech_score = min(35, (premium_matches * 7) + (good_matches * 3))
+  score += tech_score
+  
+  # 2. Level Match (30 points max)
+  if any(level in title_lower for level in ["staff", "principal", "lead"]):
+    score += 30
+  
+  # 3. Salary Fit (20 points max)
+  if salary_status == "VERIFIED":
+    score += 20
+  elif salary_status == "UNLISTED":
+    score += 5
+  
+  # 4. Role Focus (15 points max)
+  role_emphases = ["fullstack", "full stack", "frontend", "front end"]
+  if any(role in title_lower for role in role_emphases):
+    score += 15
+  elif "react" in title_lower or "typescript" in title_lower:
+    score += 12
+  
+  return min(100, score)
+
+
 # =============================================================================
 # UTILITIES & DISPATCHER
 # =============================================================================
@@ -325,12 +504,28 @@ def send_discord_alerts(matches: list[dict]):
       salary_badge = f"🔴 **{m['salary_text']}** (Below target)"
       color = 0xE74C3C
 
+    # Quality score display
+    score = m.get("quality_score", 0)
+    if score >= 85:
+      score_badge = f"⭐ {score}/100 (Excellent match)"
+    elif score >= 70:
+      score_badge = f"✅ {score}/100 (Strong match)"
+    elif score >= 50:
+      score_badge = f"🔶 {score}/100 (Moderate match)"
+    else:
+      score_badge = f"🔹 {score}/100 (Low match)"
+
     embed = {
         "title": f"{m['title']} @ {m['company']}",
         "url": m["url"],
         "color": color,
         "fields": [
-            {"name": "💰 Compensation", "value": salary_badge, "inline": False},
+            {
+                "name": "📊 Quality Score",
+                "value": score_badge,
+                "inline": True,
+            },
+            {"name": "💰 Compensation", "value": salary_badge, "inline": True},
             {
                 "name": "📍 Location & Work Type",
                 "value": f"{m['location']} (EOR Supported)",
@@ -361,7 +556,7 @@ def send_discord_alerts(matches: list[dict]):
     }
 
     try:
-      requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=15)
+      requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=20)
     except Exception as e:
       print(f"Failed to post alert for {m['id']}: {e}")
 
@@ -377,7 +572,7 @@ def process_job_posting(
     comp_data: dict = None,
 ) -> dict | None:
   """Central evaluation pipeline for every detected role."""
-  if not is_target_role(title):
+  if not is_target_role(title, content):
     return None
 
   if not is_fully_remote(location, workplace_type, content):
@@ -394,6 +589,7 @@ def process_job_posting(
     return None
 
   key_tech = extract_key_signals(content)
+  quality_score = calculate_job_quality_score(title, content, salary_text, salary_status)
   recruiter_url = f"https://www.linkedin.com/search/results/people/?keywords={company}%20recruiter"
   outreach_note = f"Hi [Name], saw the {title} opening at {company} and wanted to connect regarding frontend/fullstack architectural impact."
 
@@ -406,6 +602,7 @@ def process_job_posting(
       "salary_text": salary_text,
       "salary_status": salary_status,
       "key_tech": key_tech,
+      "quality_score": quality_score,
       "recruiter_url": recruiter_url,
       "outreach_note": outreach_note,
   }
@@ -419,7 +616,7 @@ def check_ashby(seen_jobs: set) -> list[dict]:
   for board in ASHBY_BOARDS:
     url = f"https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=true"
     try:
-      resp = requests.get(url, timeout=15)
+      resp = requests.get(url, timeout=20)
       if resp.status_code != 200:
         continue
       data = resp.json()
@@ -429,15 +626,17 @@ def check_ashby(seen_jobs: set) -> list[dict]:
         if job_id in seen_jobs:
           continue
 
+        content = job.get("descriptionPlain") or job.get("descriptionHtml") or ""
+        if not is_target_role(job.get("title", ""), content):
+          continue
+
         match = process_job_posting(
             job_id=job_id,
             company=board.capitalize(),
             title=job.get("title", ""),
             location=job.get("location", ""),
             workplace_type=job.get("workplaceType", ""),
-            content=job.get("descriptionPlain")
-            or job.get("descriptionHtml")
-            or "",
+            content=content,
             url=job.get("jobUrl") or job.get("applyUrl"),
             comp_data=job.get("compensation"),
         )
@@ -453,7 +652,7 @@ def check_greenhouse(seen_jobs: set) -> list[dict]:
   for board in GREENHOUSE_BOARDS:
     url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true"
     try:
-      resp = requests.get(url, timeout=15)
+      resp = requests.get(url, timeout=20)
       if resp.status_code != 200:
         continue
       data = resp.json()
@@ -470,6 +669,8 @@ def check_greenhouse(seen_jobs: set) -> list[dict]:
             else str(location_obj)
         )
         content = job.get("content", "")
+        if not is_target_role(job.get("title", ""), content):
+          continue
 
         match = process_job_posting(
             job_id=job_id,
@@ -492,7 +693,7 @@ def check_lever(seen_jobs: set) -> list[dict]:
   for board in LEVER_BOARDS:
     url = f"https://api.lever.co/v0/postings/{board}?mode=json"
     try:
-      resp = requests.get(url, timeout=15)
+      resp = requests.get(url, timeout=20)
       if resp.status_code != 200:
         continue
       jobs = resp.json()
@@ -506,6 +707,8 @@ def check_lever(seen_jobs: set) -> list[dict]:
         location = categories.get("location", "")
         workplace_type = job.get("workplaceType", "")
         content = job.get("descriptionPlain") or job.get("description") or ""
+        if not is_target_role(job.get("text", ""), content):
+          continue
 
         match = process_job_posting(
             job_id=job_id,
@@ -541,6 +744,14 @@ if __name__ == "__main__":
         send_discord_alerts(all_matches)
         for m in all_matches:
             seen_jobs.add(m["id"])
+            # Save to application tracking database
+            save_application(
+                job_id=m["id"],
+                company=m["company"],
+                role_title=m["title"],
+                job_url=m["url"],
+                quality_score=m.get("quality_score", 0)
+            )
         save_seen_jobs(seen_jobs)
     else:
         print("Execution complete. No new matching roles found.")
