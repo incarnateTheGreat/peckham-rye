@@ -1,0 +1,50 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'track_jobs.py'
+      - 'dashboard.py'
+      - 'update_application.py'
+      - 'test_track_jobs.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'track_jobs.py'
+      - 'dashboard.py'
+      - 'update_application.py'
+      - 'test_track_jobs.py'
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      
+      - name: Run pytest
+        run: |
+          python -m pytest test_track_jobs.py -v --tb=short
+      
+      - name: Report results
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ All tests passed!"
+          else
+            echo "❌ Tests failed!"
+            exit 1
+          fi
