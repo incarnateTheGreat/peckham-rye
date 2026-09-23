@@ -561,6 +561,67 @@ def send_discord_alerts(matches: list[dict]):
       print(f"Failed to post alert for {m['id']}: {e}")
 
 
+def send_summary_alert(matches_count: int, run_time_str: str):
+  """Send a silent summary card (no @mention) with tracker status."""
+  if not DISCORD_WEBHOOK_URL:
+    return
+
+  # Get application status
+  apps = load_applications()
+  stage_counts = {"applied": 0, "interviewing": 0, "rejected": 0, "offer": 0}
+  for app in apps:
+    if app["current_stage"] in stage_counts:
+      stage_counts[app["current_stage"]] += 1
+
+  # Determine color based on results
+  if matches_count > 0:
+    color = 0x3498DB  # Blue for results
+    summary_title = f"📊 Job Tracker Summary - {matches_count} New Match{'es' if matches_count != 1 else ''}"
+  else:
+    color = 0x95A5A6  # Gray for no results
+    summary_title = "📊 Job Tracker Summary - No New Matches"
+
+  embed = {
+      "title": summary_title,
+      "color": color,
+      "fields": [
+          {
+              "name": "🆕 Jobs Found This Run",
+              "value": f"{matches_count}",
+              "inline": True,
+          },
+          {
+              "name": "📋 Application Pipeline",
+              "value": (
+                  f"🔂 Applied: {stage_counts['applied']}\n"
+                  f"🗣️ Interviewing: {stage_counts['interviewing']}\n"
+                  f"❌ Rejected: {stage_counts['rejected']}\n"
+                  f"🎉 Offers: {stage_counts['offer']}"
+              ),
+              "inline": True,
+          },
+          {
+              "name": "📈 Total Applications Tracked",
+              "value": f"{len(apps)}",
+              "inline": True,
+          },
+      ],
+      "footer": {
+          "text": f"Last run: {run_time_str}"
+      },
+  }
+
+  try:
+    # Post as silent message (no @mention, no ping)
+    payload = {
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},  # No mentions at all
+    }
+    requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=20)
+  except Exception as e:
+    print(f"Failed to post summary alert: {e}")
+
+
 def process_job_posting(
     job_id: str,
     company: str,
@@ -732,7 +793,8 @@ def check_lever(seen_jobs: set) -> list[dict]:
 if __name__ == "__main__":
     init_db()  # Initialize database on startup
     seen_jobs = load_seen_jobs()
-    # ... rest of existing code
+    
+    run_time_str = get_formatted_timestamp("America/Toronto")
 
     all_matches = []
     all_matches.extend(check_ashby(seen_jobs))
@@ -755,5 +817,8 @@ if __name__ == "__main__":
         save_seen_jobs(seen_jobs)
     else:
         print("Execution complete. No new matching roles found.")
+    
+    # Always send summary (regardless of results) for visibility
+    send_summary_alert(len(all_matches), run_time_str)
 
 
