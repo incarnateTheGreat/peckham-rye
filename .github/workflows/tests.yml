@@ -8,6 +8,10 @@ on:
             - "dashboard.py"
             - "update_application.py"
             - "test_track_jobs.py"
+            - "migrate_db.py"
+            - "profiles/**"
+            - "requirements.txt"
+            - ".github/workflows/tests.yml"
     pull_request:
         branches: [main]
         paths:
@@ -15,6 +19,10 @@ on:
             - "dashboard.py"
             - "update_application.py"
             - "test_track_jobs.py"
+            - "migrate_db.py"
+            - "profiles/**"
+            - "requirements.txt"
+            - ".github/workflows/tests.yml"
 
 jobs:
     test:

@@ -64,6 +64,83 @@ python track_jobs.py
 - Console logs showing fetched jobs, filtering criteria, and Discord posting result
 - Discord embed in your #job-alerts channel with matching roles
 
+## Search Profiles
+
+A **profile** is a YAML file describing who the search is for: which job titles
+count, the salary floor per currency, acceptable work modes and regions, which
+sources to poll, and which Discord webhook to alert. Two ship with the repo:
+
+| Profile                     | For                          | Sources                       |
+| --------------------------- | ---------------------------- | ----------------------------- |
+| `profiles/engineering.yml`  | Frontend/fullstack engineers | Curated Ashby/Greenhouse/Lever |
+| `profiles/product-owner.yml`| Product owners/managers      | Remote OK + Himalayas          |
+
+Omitting `--profile` uses the built-in defaults, which are identical to
+`profiles/engineering.yml`.
+
+```bash
+python track_jobs.py --profile profiles/product-owner.yml
+python dashboard.py --profile profiles/product-owner.yml
+python update_application.py --profile profiles/product-owner.yml list
+```
+
+**Writing your own:** copy `profiles/engineering.yml` — it is a fully annotated
+dump of every available field. A profile only needs to declare what differs
+from the defaults; everything else is inherited. `profiles/product-owner.yml`
+shows that minimal style.
+
+**Per-profile webhooks:** a profile named `product-owner` looks for
+`DISCORD_WEBHOOK_PRODUCT_OWNER`, then falls back to `DISCORD_WEBHOOK_URL`. A
+profile can also name its own variable via the `webhook_env` field. This is how
+each persona gets its own Discord channel.
+
+**Sources:** curated ATS boards (`ashby`, `greenhouse`, `lever`) give the
+highest signal but need company slugs. The aggregators (`remoteok`,
+`himalayas`) need no slugs and are the only option for a profile with no target
+companies — but they skew US/EU remote, so region-specific searches will see
+thin results until board slugs are added. Both aggregators require attribution,
+which the alert footer applies automatically.
+
+### Database
+
+The tracker owns three tables — `seen_jobs`, `applications` and
+`applications_history` — and expects its own database. Give it a dedicated
+role rather than reusing an existing one: in Postgres a separate *database* is
+not a security boundary, since any role with `CONNECT` can reach the others in
+the same project.
+
+A suitable setup, run once as the owning role:
+
+```sql
+-- Create via SQL, not the provider's console: managed providers often grant
+-- console-created roles a superuser-like role that defeats the purpose.
+CREATE ROLE job_tracker WITH LOGIN PASSWORD '<password>';
+GRANT CONNECT ON DATABASE "job-tracker" TO job_tracker;
+GRANT USAGE ON SCHEMA public TO job_tracker;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO job_tracker;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO job_tracker;
+
+-- Close the implicit cross-database path on any other database in the project.
+REVOKE ALL ON DATABASE <other_database> FROM PUBLIC;
+```
+
+These grants cover normal operation but not `ALTER TABLE`, which only a table's
+owner may run — so use the owning role's connection string when running
+`migrate_db.py`, then switch back.
+
+Profiles are isolated by a `profile` column on each table. A fresh database
+needs no migration — `init_db()` creates the current schema on first run. If
+you ran an earlier single-profile version, upgrade the schema once before
+running again:
+
+```bash
+python migrate_db.py --dry-run   # show what would change
+python migrate_db.py             # apply
+```
+
+Existing rows are attributed to `engineering` by default
+(`--backfill-profile` to change). The script is idempotent and safe to re-run.
+
 ### Step 4: Deploy to GitHub
 
 ```bash
@@ -86,6 +163,13 @@ git push -u origin main
 3. **Name**: `DISCORD_WEBHOOK_URL`
 4. **Value**: Paste your Discord Webhook URL from Step 2
 5. **Click** "Add secret"
+
+Also add `DATABASE_URL` for the Neon connection string.
+
+The scheduled workflow runs every profile in a matrix, one job each. To give a
+profile its own channel, add a secret named after it —
+`DISCORD_WEBHOOK_ENGINEERING` or `DISCORD_WEBHOOK_PRODUCT_OWNER`. Profiles
+without one fall back to `DISCORD_WEBHOOK_URL`.
 
 ### Step 6: Verify Workflow
 
