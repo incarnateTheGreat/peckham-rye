@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
 """
 Unit tests for high-risk logic in track_jobs.py
-Tests: quality score calculation, role filtering, salary parsing
+Tests: quality score calculation, role filtering, salary parsing,
+profile loading, work-mode and region filtering
 """
+
+from pathlib import Path
 
 import pytest
 from track_jobs import (
+    DEFAULT_PROFILE,
+    SOURCE_ATTRIBUTION,
+    SOURCE_FETCHERS,
+    build_job_embed,
     calculate_job_quality_score,
+    collect_matches,
+    detect_work_mode,
+    get_webhook_url,
+    is_eor_supported,
     is_target_role,
+    load_profile,
+    matches_region,
+    matches_work_mode,
     parse_salary_info,
 )
+import track_jobs
+
+PROFILES_DIR = Path(__file__).parent / "profiles"
 
 
 # =============================================================================
@@ -22,7 +39,7 @@ class TestQualityScore:
         """Near-perfect score with all positive factors"""
         title = "Staff React TypeScript Engineer"
         content = "React, TypeScript, Next.js, GraphQL, PostgreSQL"
-        score = calculate_job_quality_score(title, content, "USD $185,000", "VERIFIED")
+        score = calculate_job_quality_score(title, content, "VERIFIED")
         # Tech: 31 (React+TS+Next+GraphQL=28, PostgreSQL=3)
         # Level: 30 (Staff)
         # Salary: 20 (VERIFIED)
@@ -34,7 +51,7 @@ class TestQualityScore:
         """Score with tech stack but no level/salary"""
         title = "React Engineer"
         content = "React, TypeScript, GraphQL"
-        score = calculate_job_quality_score(title, content, "Unlisted", "UNLISTED")
+        score = calculate_job_quality_score(title, content, "UNLISTED")
         # Tech: 21 (React + TS + GraphQL = 3 techs * 7) = 21
         # Role: 15 (React in title but no specific role word) = 0
         # Actually: React in title but "react" keyword counts toward role focus
@@ -51,7 +68,7 @@ class TestQualityScore:
         """Score with Staff level but generic tech"""
         title = "Staff Software Engineer"
         content = "General software engineering"
-        score = calculate_job_quality_score(title, content, "Unlisted", "UNLISTED")
+        score = calculate_job_quality_score(title, content, "UNLISTED")
         # Tech: 0 (no premium/good techs)
         # Level: 30 (staff)
         # Salary: 5 (unlisted)
@@ -67,8 +84,8 @@ class TestQualityScore:
         title1 = "React Engineer"
         content = "React, TypeScript"
         
-        score_verified = calculate_job_quality_score(title1, content, "USD $150,000", "VERIFIED")
-        score_unlisted = calculate_job_quality_score(title1, content, "Unlisted", "UNLISTED")
+        score_verified = calculate_job_quality_score(title1, content, "VERIFIED")
+        score_unlisted = calculate_job_quality_score(title1, content, "UNLISTED")
         
         diff = score_verified - score_unlisted
         assert diff == 15, f"Verified should be +15 more (20 vs 5), got diff={diff}"
@@ -79,8 +96,8 @@ class TestQualityScore:
         title_generic = "Engineer"
         content = "React"
         
-        score_fs = calculate_job_quality_score(title_fullstack, content, "Unlisted", "UNLISTED")
-        score_gen = calculate_job_quality_score(title_generic, content, "Unlisted", "UNLISTED")
+        score_fs = calculate_job_quality_score(title_fullstack, content, "UNLISTED")
+        score_gen = calculate_job_quality_score(title_generic, content, "UNLISTED")
         
         diff = score_fs - score_gen
         assert diff == 15, f"Fullstack title should add 15 points, got diff={diff}"
@@ -235,6 +252,471 @@ class TestSalaryParsing:
         assert meets == True  # We don't reject unlisted, just flag them
         assert status == "UNLISTED"
         assert "Unlisted" in display
+
+
+# =============================================================================
+# PROFILE LOADING TESTS
+# =============================================================================
+class TestProfileLoading:
+    """Test SearchProfile construction from YAML"""
+
+    def test_no_path_returns_defaults(self):
+        """Omitting --profile yields the built-in defaults"""
+        assert load_profile(None) is DEFAULT_PROFILE
+
+    def test_engineering_yaml_matches_defaults(self):
+        """profiles/engineering.yml must not drift from the built-in defaults"""
+        loaded = load_profile(str(PROFILES_DIR / "engineering.yml"))
+        assert loaded == DEFAULT_PROFILE
+
+    def test_product_owner_yaml_loads(self):
+        """The product-owner profile parses and overrides what it declares"""
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert p.name == "product-owner"
+        assert p.min_salary == {"CAD": 125000, "USD": 100000}
+        assert p.require_eor is False
+        assert p.work_modes == ["remote", "hybrid"]
+
+    def test_omitted_fields_inherit_defaults(self, tmp_path):
+        """A profile only declares what differs; the rest is inherited"""
+        f = tmp_path / "minimal.yml"
+        f.write_text("require_eor: false\n")
+        p = load_profile(str(f))
+
+        assert p.require_eor is False
+        assert p.name == "minimal"  # derived from the file stem
+        assert p.boards == DEFAULT_PROFILE.boards
+        assert p.min_salary == DEFAULT_PROFILE.min_salary
+
+    def test_explicit_name_overrides_stem(self, tmp_path):
+        f = tmp_path / "whatever.yml"
+        f.write_text("name: custom-name\n")
+        assert load_profile(str(f)).name == "custom-name"
+
+    def test_unknown_key_rejected(self, tmp_path):
+        """Typos fail loudly rather than being silently ignored"""
+        f = tmp_path / "typo.yml"
+        f.write_text("min_salery:\n  USD: 100000\n")
+        with pytest.raises(ValueError, match="Unknown profile keys"):
+            load_profile(str(f))
+
+    def test_invalid_name_rejected(self, tmp_path):
+        f = tmp_path / "bad.yml"
+        f.write_text("name: Product Owner!\n")
+        with pytest.raises(ValueError, match="must match"):
+            load_profile(str(f))
+
+    def test_invalid_work_mode_rejected(self, tmp_path):
+        f = tmp_path / "modes.yml"
+        f.write_text("work_modes:\n  - remote\n  - telepathic\n")
+        with pytest.raises(ValueError, match="Invalid work_modes"):
+            load_profile(str(f))
+
+    def test_empty_file_is_defaults_with_stem_name(self, tmp_path):
+        f = tmp_path / "blank.yml"
+        f.write_text("")
+        p = load_profile(str(f))
+        assert p.name == "blank"
+        assert p.min_salary == DEFAULT_PROFILE.min_salary
+
+
+class TestWebhookResolution:
+    """Test per-profile Discord webhook lookup"""
+
+    def test_explicit_webhook_env_wins(self, monkeypatch, tmp_path):
+        f = tmp_path / "p.yml"
+        f.write_text("name: custom\nwebhook_env: MY_HOOK\n")
+        monkeypatch.setenv("MY_HOOK", "https://example.invalid/explicit")
+        monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://example.invalid/generic")
+        assert get_webhook_url(load_profile(str(f))) == "https://example.invalid/explicit"
+
+    def test_per_profile_env_preferred_over_generic(self, monkeypatch, tmp_path):
+        f = tmp_path / "product-owner.yml"
+        f.write_text("{}\n")
+        monkeypatch.setenv("DISCORD_WEBHOOK_PRODUCT_OWNER", "https://example.invalid/po")
+        monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://example.invalid/generic")
+        assert get_webhook_url(load_profile(str(f))) == "https://example.invalid/po"
+
+    def test_falls_back_to_generic_webhook(self, monkeypatch, tmp_path):
+        f = tmp_path / "product-owner.yml"
+        f.write_text("{}\n")
+        monkeypatch.delenv("DISCORD_WEBHOOK_PRODUCT_OWNER", raising=False)
+        monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://example.invalid/generic")
+        assert get_webhook_url(load_profile(str(f))) == "https://example.invalid/generic"
+
+    def test_missing_webhook_returns_none(self, monkeypatch):
+        monkeypatch.delenv("DISCORD_WEBHOOK_ENGINEERING", raising=False)
+        monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+        assert get_webhook_url(DEFAULT_PROFILE) is None
+
+
+# =============================================================================
+# WORK MODE & REGION TESTS
+# =============================================================================
+class TestWorkModeDetection:
+    """Test detect_work_mode classification"""
+
+    def test_explicit_workplace_type(self):
+        assert detect_work_mode("", "remote", "") == "remote"
+        assert detect_work_mode("", "hybrid", "") == "hybrid"
+        assert detect_work_mode("", "onsite", "") == "onsite"
+
+    def test_remote_from_location(self):
+        assert detect_work_mode("Remote - Canada", "", "") == "remote"
+        assert detect_work_mode("Work from anywhere", "", "") == "remote"
+
+    def test_remote_from_description_head(self):
+        assert detect_work_mode("", "", "This is a fully remote role.") == "remote"
+
+    def test_remote_signal_late_in_description_ignored(self):
+        """Only the first 500 chars are scanned, to avoid footer boilerplate"""
+        padding = "x" * 600
+        assert detect_work_mode("", "", padding + " remote") == "unknown"
+
+    def test_hybrid_location_beats_remote_workplace_type(self):
+        """An explicit hybrid location wins over a 'remote' ATS tag"""
+        assert detect_work_mode("Hybrid - Toronto", "remote", "") == "hybrid"
+
+    def test_onsite_location_beats_remote_description(self):
+        assert detect_work_mode("Onsite - NYC", "", "remote friendly team") == "onsite"
+
+    def test_no_signal_is_unknown(self):
+        assert detect_work_mode("New York, NY", "", "Join our team") == "unknown"
+
+
+class TestWorkModeFiltering:
+    """Test matches_work_mode against profile.work_modes"""
+
+    def test_default_profile_accepts_only_remote(self):
+        assert matches_work_mode("Remote", "", "") is True
+        assert matches_work_mode("Hybrid - Toronto", "", "") is False
+        assert matches_work_mode("New York, NY", "", "") is False  # unknown
+
+    def test_product_owner_accepts_remote_and_hybrid(self):
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert matches_work_mode("Remote - Canada", "", "", p) is True
+        assert matches_work_mode("Hybrid - Toronto", "", "", p) is True
+        assert matches_work_mode("Onsite - Toronto", "", "", p) is False
+        assert matches_work_mode("Toronto, ON", "", "", p) is False  # unknown
+
+    def test_empty_work_modes_disables_filter(self, tmp_path):
+        f = tmp_path / "anymode.yml"
+        f.write_text("work_modes: []\n")
+        p = load_profile(str(f))
+        assert matches_work_mode("Onsite - NYC", "", "", p) is True
+
+    def test_unknown_can_be_opted_into(self, tmp_path):
+        f = tmp_path / "loose.yml"
+        f.write_text("work_modes:\n  - remote\n  - unknown\n")
+        p = load_profile(str(f))
+        assert matches_work_mode("New York, NY", "", "", p) is True
+        assert matches_work_mode("Hybrid - NYC", "", "", p) is False
+
+
+class TestRegionFiltering:
+    """Test matches_region against profile.regions"""
+
+    def test_empty_regions_accepts_anywhere(self):
+        assert matches_region("Berlin, Germany", "", DEFAULT_PROFILE) is True
+
+    def test_product_owner_region_matching(self):
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert matches_region("Toronto, ON", "", p) is True
+        assert matches_region("Remote - Canada", "", p) is True
+        assert matches_region("Austin, TX", "", p) is False
+
+    def test_region_found_in_description_head(self):
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert matches_region("Remote", "Open to candidates in Ontario.", p) is True
+
+
+# =============================================================================
+# EOR TESTS
+# =============================================================================
+class TestEorDetection:
+    """Test is_eor_supported. The signal list is deliberately narrow: only
+    explicit EOR terminology and named vendors, matched on word boundaries."""
+
+    def test_explicit_eor_language_detected(self):
+        assert is_eor_supported("", "We hire via an employer of record.") is True
+        assert is_eor_supported("", "Payroll is handled through Deel.") is True
+
+    def test_vendor_name_detected(self):
+        assert is_eor_supported("", "We use Velocity Global for hiring.") is True
+        assert is_eor_supported("", "Global payroll is handled for you.") is True
+
+    def test_no_signal_returns_false(self):
+        assert is_eor_supported("Austin, TX", "Join our team in Texas.") is False
+
+    def test_eeo_boilerplate_is_not_an_eor_signal(self):
+        """'canada' used to be an EOR signal, so any EEO statement matched."""
+        boilerplate = "We are an equal opportunity employer in the US and Canada."
+        assert is_eor_supported("Austin, TX", boilerplate) is False
+
+    def test_a_country_name_alone_is_not_an_eor_signal(self):
+        assert is_eor_supported("Canada Remote", "") is False
+
+    def test_short_signal_is_word_boundary_matched(self):
+        """'eor' must not fire on 'theory' or 'reorganization'."""
+        assert is_eor_supported("", "Strong grounding in queueing theory.") is False
+        assert is_eor_supported("", "Following a recent reorganization.") is False
+        assert is_eor_supported("", "We offer EOR employment.") is True
+
+
+# =============================================================================
+# PROFILE-AWARE FILTERING TESTS
+# =============================================================================
+class TestProfileAwareRoleFiltering:
+    """Test that is_target_role respects the supplied profile"""
+
+    def test_pm_titles_pass_pm_profile_only(self):
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert is_target_role("Senior Product Manager", "", p) is True
+        assert is_target_role("Senior Product Manager", "", DEFAULT_PROFILE) is False
+
+    def test_engineering_titles_fail_pm_profile(self):
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert is_target_role("Senior React Engineer", "", p) is False
+
+    def test_technical_and_platform_pm_titles_survive_exclusions(self):
+        """'technical' and 'platform' must not be excluded wholesale"""
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert is_target_role("Technical Product Manager", "", p) is True
+        assert is_target_role("Platform Product Manager", "", p) is True
+
+    def test_pm_exclusions_rejected(self):
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert is_target_role("Junior Product Manager", "", p) is False
+        assert is_target_role("Director of Product Management", "", p) is False
+        assert is_target_role("VP Product", "", p) is False
+
+    def test_exclusions_are_word_boundary_matched(self):
+        """'lead' as an exclusion must not match 'leadership'"""
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        # "vp" is excluded, but must not match inside another word
+        assert is_target_role("Senior Product Manager, VPN Tools", "", p) is True
+
+    def test_generic_product_title_requires_description(self):
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert is_target_role("Product Strategist", "Own the roadmap", p) is True
+        assert is_target_role("Product Strategist", "Manage our retail floor", p) is False
+
+
+class TestRoleFocusScoring:
+    """Test the primary/secondary role keyword scoring tiers"""
+
+    def test_primary_scores_above_secondary(self):
+        """Titles chosen to carry no premium/good signal terms, so only the
+        role-focus tier differs between them."""
+        content = "General engineering work"
+        primary = calculate_job_quality_score("Frontend Engineer", content, "UNLISTED")
+        secondary = calculate_job_quality_score("UI Engineer", content, "UNLISTED")
+        assert primary - secondary == 3, "primary=15, secondary=12"
+
+    def test_non_matching_title_scores_zero_role_focus(self):
+        content = "General engineering work"
+        primary = calculate_job_quality_score("Frontend Engineer", content, "UNLISTED")
+        none = calculate_job_quality_score("Engineer", content, "UNLISTED")
+        assert primary - none == 15
+
+
+# =============================================================================
+# SALARY EDGE CASES
+# =============================================================================
+class TestSalaryEdgeCases:
+    """Cases that previously parsed wrongly or dropped a posting silently"""
+
+    def test_hourly_rate_is_not_annualized(self):
+        """'$75 - $95/hr' must not be read as $75,000."""
+        meets, _, status = parse_salary_info("Pay: $75 - $95/hr")
+        assert status == "HOURLY"
+        assert meets is True
+
+    def test_trailing_currency_is_detected(self):
+        """Currency after the amount, not before. 130k clears the PM profile's
+        CAD floor of 125k but not engineering's 200k, so the profile matters."""
+        pm = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        meets, _, status = parse_salary_info("Range: 130,000 - 150,000 CAD", None, pm)
+        assert status == "VERIFIED"
+        assert meets is True
+
+    def test_trailing_currency_below_threshold_is_rejected(self):
+        pm = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        meets, _, status = parse_salary_info("Range: 110,000 - 120,000 CAD", None, pm)
+        assert status == "BELOW_THRESHOLD"
+        assert meets is False
+
+    def test_threshold_is_currency_aware(self):
+        """The same CAD figure passes one profile and fails the other."""
+        pm = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        text = "Range: 130,000 - 150,000 CAD"
+        assert parse_salary_info(text, None, pm)[2] == "VERIFIED"
+        assert parse_salary_info(text, None, DEFAULT_PROFILE)[2] == "BELOW_THRESHOLD"
+
+    def test_years_of_experience_is_not_a_salary(self):
+        """A currency token is required, so '10-15 years' can't match."""
+        meets, _, status = parse_salary_info("We want 10-15 years of experience")
+        assert status == "UNLISTED"
+        assert meets is True
+
+    def test_unknown_currency_surfaces_rather_than_drops(self):
+        """No GBP threshold is configured, so flag it for manual review."""
+        comp = {
+            "targetCompensationMin": 90000,
+            "currency": "GBP",
+            "interval": "yearly",
+        }
+        meets, text, status = parse_salary_info("", comp)
+        assert status == "UNLISTED"
+        assert meets is True
+        assert "no GBP threshold set" in text
+
+    def test_structured_hourly_interval_is_detected(self):
+        comp = {
+            "targetCompensationMin": 85,
+            "targetCompensationMax": 110,
+            "currency": "USD",
+            "interval": "hourly",
+        }
+        _, _, status = parse_salary_info("", comp)
+        assert status == "HOURLY"
+
+
+# =============================================================================
+# AGGREGATOR NORMALIZATION
+# =============================================================================
+class TestAggregatorNormalization:
+    """The aggregator feeds are the only source for a profile with no boards"""
+
+    def test_remoteok_zero_salary_is_not_treated_as_compensation(self):
+        """Remote OK sends "0" for both bounds when pay is unknown."""
+        job = track_jobs._normalize_remoteok({
+            "id": "123",
+            "position": "Senior Product Manager",
+            "company": "Acme",
+            "salary_min": "0",
+            "salary_max": "0",
+        })
+        assert job["comp_data"] is None
+        assert job["id"] == "remoteok_123"
+        assert job["source"] == "remoteok"
+
+    def test_remoteok_real_salary_is_mapped(self):
+        job = track_jobs._normalize_remoteok({
+            "id": "9", "position": "PM", "company": "Acme",
+            "salary_min": "150000", "salary_max": "180000",
+        })
+        assert job["comp_data"]["targetCompensationMin"] == 150000
+        assert job["comp_data"]["currency"] == "USD"
+
+    def test_remoteok_posting_without_id_is_skipped(self):
+        assert track_jobs._normalize_remoteok({"position": "PM"}) is None
+
+    def test_himalayas_list_fields_do_not_crash(self):
+        """seniority and categories arrive as lists, not strings."""
+        job = track_jobs._normalize_himalayas({
+            "guid": "abc",
+            "title": "Product Manager",
+            "companyName": "Acme",
+            "seniority": ["Senior"],
+            "categories": ["Product", "Management"],
+            "locationRestrictions": ["Canada", "United States"],
+            "description": "Own the roadmap",
+        })
+        assert job["location"] == "Canada, United States"
+        assert "Senior" in job["content"]
+        assert "Management" in job["content"]
+
+    def test_himalayas_posting_without_guid_is_skipped(self):
+        assert track_jobs._normalize_himalayas({"title": "PM"}) is None
+
+
+# =============================================================================
+# SOURCE DISPATCH
+# =============================================================================
+class TestSourceDispatch:
+    def test_unknown_source_warns_and_is_skipped(self, capsys):
+        import dataclasses
+        profile = dataclasses.replace(DEFAULT_PROFILE, sources=["not-a-source"])
+        assert collect_matches(set(), profile) == []
+        assert "unknown source" in capsys.readouterr().out
+
+    def test_every_default_source_is_registered(self):
+        for source in DEFAULT_PROFILE.sources:
+            assert source in SOURCE_FETCHERS
+
+    def test_product_owner_sources_are_registered(self):
+        profile = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        for source in profile.sources:
+            assert source in SOURCE_FETCHERS
+
+
+# =============================================================================
+# ALERT EMBED
+# =============================================================================
+class TestJobEmbed:
+    @staticmethod
+    def _match(**overrides):
+        match = {
+            "title": "Senior Product Manager",
+            "company": "Acme",
+            "url": "https://example.com/job",
+            "location": "Toronto",
+            "work_mode": "remote",
+            "quality_score": 80,
+            "salary_text": "CAD 140,000",
+            "salary_status": "VERIFIED",
+            "key_tech": "Roadmap",
+            "recruiter_url": "https://linkedin.com/search",
+            "outreach_note": "Hi there",
+            "source": "remoteok",
+            "eor_detected": False,
+        }
+        match.update(overrides)
+        return match
+
+    def _field_names(self, match):
+        return [f["name"] for f in build_job_embed(match, "now")["fields"]]
+
+    def test_eor_field_absent_when_not_detected(self):
+        """Absence means 'not stated', which must not be claimed as support."""
+        assert not any("EOR" in n for n in self._field_names(self._match()))
+
+    def test_eor_field_present_when_detected(self):
+        names = self._field_names(self._match(eor_detected=True))
+        assert any("EOR" in n for n in names)
+
+    def test_aggregator_source_is_attributed_by_name(self):
+        """Remote OK and Himalayas require attribution for free API access."""
+        for source, expected in SOURCE_ATTRIBUTION.items():
+            embed = build_job_embed(self._match(source=source), "now")
+            assert expected in embed["footer"]["text"]
+
+
+# =============================================================================
+# REGION WILDCARDS
+# =============================================================================
+class TestRegionWildcards:
+    """An unrestricted posting doesn't exclude the profile's regions"""
+
+    @pytest.fixture
+    def pm(self):
+        return load_profile(str(PROFILES_DIR / "product-owner.yml"))
+
+    def test_named_region_matches(self, pm):
+        assert matches_region("Toronto, ON", "", pm) is True
+
+    def test_unrestricted_remote_is_kept(self, pm):
+        assert matches_region("Remote", "", pm) is True
+        assert matches_region("Worldwide", "", pm) is True
+        assert matches_region("", "", pm) is True
+
+    def test_other_country_is_rejected(self, pm):
+        assert matches_region("Germany", "", pm) is False
+        assert matches_region("Melbourne", "", pm) is False
+
+    def test_empty_regions_accepts_anything(self):
+        assert matches_region("Germany", "", DEFAULT_PROFILE) is True
 
 
 if __name__ == "__main__":

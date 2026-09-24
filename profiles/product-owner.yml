@@ -1,0 +1,147 @@
+# Product Owner / Product Manager profile.
+#
+# Only the fields that differ from the built-in defaults are listed. Anything
+# omitted here (timezone, hybrid_markers, eor_signals, ...) is inherited.
+# See engineering.yml for the full annotated field list.
+#
+# Webhook: set DISCORD_WEBHOOK_PRODUCT_OWNER in the environment.
+
+name: product-owner
+
+# No curated board slugs yet — this profile has no target companies, so it
+# relies entirely on the aggregator sources below. Adding company slugs here
+# (see engineering.yml) remains the highest-signal option for Canadian roles,
+# because the free aggregators skew US/EU remote.
+boards: {}
+
+# Aggregators are company-agnostic feeds, so they work without board slugs.
+# Both require attribution, which the alert footer provides automatically.
+sources:
+    - remoteok
+    - himalayas
+
+min_salary:
+    CAD: 125000
+    USD: 100000
+
+primary_role_keywords:
+    - senior product owner
+    - senior technical product owner
+    - technical product owner
+    - senior product manager
+    - technical product manager
+    - platform product manager
+    - healthcare product manager
+    - digital health product manager
+    - product manager
+secondary_role_keywords:
+    - product owner
+    - platform product owner
+    - lead product owner
+    - product lead
+    - ai product manager
+    - growth product manager
+
+# "B2B SaaS Product Manager" and similar rarely appear verbatim in titles, so
+# a bare "product" title is accepted when the description carries the signal.
+generic_title_fallbacks:
+    - product
+require_in_description:
+    - product strategy
+    - roadmap
+    - backlog
+    - discovery
+    - stakeholder
+
+# Word-boundary matched, so "lead" will not match "leadership". Deliberately
+# excludes no form of "technical" or "platform" — both appear in wanted titles.
+exclude_title_exact:
+    - junior
+    - associate
+    - intern
+    - director
+    - vp
+    - vice president
+    - head of product
+    - commission
+    - software engineer
+    - developer
+    - devops
+    # Adjacent "product" roles the generic-title fallback would otherwise let
+    # through from the broad aggregator feeds.
+    - designer
+    - design
+    - marketing
+    - sales
+    - support
+
+# Director/VP are omitted here because they are excluded above.
+high_level_keywords:
+    - senior
+    - lead
+    - principal
+
+premium_signals:
+    - enterprise saas
+    - b2b saas
+    - healthcare technology
+    - digital health
+    - product strategy
+    - roadmap ownership
+    - discovery
+    - backlog prioritization
+    - workflow automation
+    - platform modernization
+    - integrations
+    - data quality
+    - ai-enabled
+
+# Tools are scored but never required.
+good_signals:
+    - Jira
+    - Confluence
+    - Azure DevOps
+    - Pendo
+    - Figma
+    - SQL
+    - AWS
+    - AWS Bedrock
+    - GitHub
+    - APIs
+
+key_signal_terms:
+    - product strategy
+    - roadmap
+    - discovery
+    - backlog
+    - integrations
+    - workflow automation
+    - analytics
+    - Jira
+    - Confluence
+    - Pendo
+    - SQL
+    - APIs
+key_signal_fallback: Product Strategy / Delivery
+
+# Remote preferred, hybrid acceptable; onsite and unstated are rejected.
+work_modes:
+    - remote
+    - hybrid
+
+regions:
+    - canada
+    - ontario
+    - toronto
+    - gta
+
+# EOR is irrelevant for a Canada-based search against Canadian employers.
+require_eor: false
+
+# The aggregators are broad, so weak matches are logged in the run summary but
+# don't get their own card. Lower this if the channel feels too quiet.
+alert_threshold: 50
+
+outreach_note_template: >-
+    Hi [Name], saw the {title} opening at {company} and wanted to connect
+    regarding product strategy, discovery and delivery.
