@@ -1,46 +1,54 @@
 #!/usr/bin/env python3
 """
 Update Application Stage Utility
-Usage: python3 update_application.py <job_id> <new_stage>
+
+Usage:
+  python3 update_application.py list
+  python3 update_application.py <job_id> <stage>
+  python3 update_application.py search <company> <role> <stage>
+
 Stages: applied | interviewing | rejected | offer
+
+Every command operates on a single profile. Pass --profile <path/to.yml> to
+target a profile other than the built-in default.
 """
 
+import argparse
 import sys
-import os
-import psycopg2
+
+from track_jobs import (
+    get_db_connection,
+    load_applications,
+    load_profile,
+    update_application_stage,
+)
+
+VALID_STAGES = ("applied", "interviewing", "rejected", "offer")
 
 
-def get_db_connection():
-    """Connect to NeonDB PostgreSQL"""
-    db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        print("ERROR: DATABASE_URL not set")
-        return None
-    return psycopg2.connect(db_url)
-
-
-def find_application_by_company_role(company: str, role: str) -> dict | None:
-    """Find application by partial company/role match"""
+def find_application_by_company_role(
+    company: str, role: str, profile_name: str
+) -> dict | None:
+    """Find an application by partial company/role match within one profile."""
     conn = get_db_connection()
     if not conn:
         return None
-
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT job_id, company, role_title, current_stage FROM applications
-            WHERE company ILIKE %s AND role_title ILIKE %s
-            LIMIT 1
-        """, (f"%{company}%", f"%{role}%"))
-        row = cursor.fetchone()
-        cursor.close()
-        if row:
-            return {
-                "job_id": row[0],
-                "company": row[1],
-                "role_title": row[2],
-                "current_stage": row[3],
-            }
+        with conn, conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT job_id, company, role_title, current_stage
+                FROM applications
+                WHERE profile = %s AND company ILIKE %s AND role_title ILIKE %s
+                LIMIT 1
+            """, (profile_name, f"%{company}%", f"%{role}%"))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "job_id": row[0],
+                    "company": row[1],
+                    "role_title": row[2],
+                    "current_stage": row[3],
+                }
     except Exception as e:
         print(f"Error searching: {e}")
     finally:
@@ -48,122 +56,92 @@ def find_application_by_company_role(company: str, role: str) -> dict | None:
     return None
 
 
-def update_application_stage(job_id: str, new_stage: str):
-    """Update application stage and record history"""
-    conn = get_db_connection()
-    if not conn:
+def apply_stage(job_id: str, new_stage: str, profile_name: str) -> bool:
+    """Validate the stage name, then hand off to the shared updater."""
+    stage = new_stage.lower()
+    if stage not in VALID_STAGES:
+        print(f"ERROR: Invalid stage. Must be one of: {', '.join(VALID_STAGES)}")
         return False
-
-    valid_stages = ["applied", "interviewing", "rejected", "offer"]
-    if new_stage.lower() not in valid_stages:
-        print(f"ERROR: Invalid stage. Must be one of: {', '.join(valid_stages)}")
-        return False
-
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE applications SET current_stage = %s WHERE job_id = %s
-        """,
-            (new_stage.lower(), job_id),
-        )
-        cursor.execute(
-            """
-            INSERT INTO applications_history (job_id, stage) VALUES (%s, %s)
-        """,
-            (job_id, new_stage.lower()),
-        )
-        conn.commit()
-        cursor.close()
-        return True
-    except Exception as e:
-        print(f"Error updating: {e}")
-        return False
-    finally:
-        conn.close()
+    return update_application_stage(job_id, stage, profile_name)
 
 
-def list_applications():
-    """List all applications"""
-    conn = get_db_connection()
-    if not conn:
+def list_applications(profile_name: str):
+    """Print this profile's applications, newest first."""
+    apps = load_applications(profile_name)
+    if not apps:
+        print(f"No applications found for profile '{profile_name}'.")
         return
 
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT job_id, company, role_title, applied_date, current_stage, quality_score
-            FROM applications
-            ORDER BY applied_date DESC
-        """)
-        results = cursor.fetchall()
-        cursor.close()
+    print("\n" + "=" * 100)
+    print(f"APPLICATIONS - {profile_name}".center(100))
+    print("=" * 100)
+    print(f"{'Job ID':<30} {'Company':<15} {'Role':<25} {'Stage':<15} {'Score':<6}")
+    print("-" * 100)
 
-        if not results:
-            print("No applications found.")
-            return
-
-        print("\n" + "=" * 100)
-        print("APPLICATIONS".center(100))
-        print("=" * 100)
+    for app in apps:
+        score = f"{app['quality_score']}/100" if app["quality_score"] else "N/A"
         print(
-            f"{'Job ID':<30} {'Company':<15} {'Role':<25} {'Stage':<15} {'Score':<6}"
+            f"{app['job_id'][:30]:<30} {app['company'][:15]:<15} "
+            f"{app['role_title'][:25]:<25} {app['current_stage'][:15]:<15} {score:<6}"
         )
-        print("-" * 100)
 
-        for row in results:
-            job_id = row[0][:30]
-            company = row[1][:15]
-            role = row[2][:25]
-            stage = row[4][:15]
-            score = f"{row[5]}/100" if row[5] else "N/A"
-            print(f"{job_id:<30} {company:<15} {role:<25} {stage:<15} {score:<6}")
-
-        print("=" * 100 + "\n")
-    except Exception as e:
-        print(f"Error listing: {e}")
-    finally:
-        conn.close()
+    print("=" * 100 + "\n")
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python3 update_application.py list                                 # List all applications")
-        print("  python3 update_application.py <job_id> <stage>                     # Update by job_id")
-        print("  python3 update_application.py search <company> <role> <stage>      # Search and update")
-        print("\nValid stages: applied, interviewing, rejected, offer")
-        return
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Update application stages",
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--profile",
+        help="Path to a YAML profile file. Omit to use the built-in defaults.",
+    )
+    parser.add_argument(
+        "args",
+        nargs="*",
+        help="list | <job_id> <stage> | search <company> <role> <stage>",
+    )
+    opts = parser.parse_args()
 
-    command = sys.argv[1].lower()
+    if not opts.args:
+        parser.print_help()
+        return 1
+
+    profile_name = load_profile(opts.profile).name
+    command = opts.args[0].lower()
 
     if command == "list":
-        list_applications()
-    elif command == "search" and len(sys.argv) >= 5:
-        company = sys.argv[2]
-        role = sys.argv[3]
-        new_stage = sys.argv[4]
+        list_applications(profile_name)
+        return 0
 
-        app = find_application_by_company_role(company, role)
-        if app:
-            print(f"Found: {app['role_title']} @ {app['company']}")
-            print(f"Current stage: {app['current_stage']}")
-            if update_application_stage(app["job_id"], new_stage):
-                print(f"✅ Updated to: {new_stage}")
-            else:
-                print("❌ Failed to update")
-        else:
+    if command == "search":
+        if len(opts.args) < 4:
+            print("Usage: update_application.py search <company> <role> <stage>")
+            return 1
+        company, role, new_stage = opts.args[1], opts.args[2], opts.args[3]
+        app = find_application_by_company_role(company, role, profile_name)
+        if not app:
             print(f"No application found for '{company}' + '{role}'")
-    elif len(sys.argv) >= 3:
-        job_id = sys.argv[1]
-        new_stage = sys.argv[2]
-        if update_application_stage(job_id, new_stage):
-            print(f"✅ Updated application {job_id} to {new_stage}")
-        else:
-            print(f"❌ Failed to update {job_id}")
-    else:
-        print("Invalid arguments. Use 'python3 update_application.py' for usage.")
+            return 1
+        print(f"Found: {app['role_title']} @ {app['company']}")
+        print(f"Current stage: {app['current_stage']}")
+        if apply_stage(app["job_id"], new_stage, profile_name):
+            print(f"Updated to: {new_stage}")
+            return 0
+        return 1
+
+    if len(opts.args) >= 2:
+        job_id, new_stage = opts.args[0], opts.args[1]
+        if apply_stage(job_id, new_stage, profile_name):
+            print(f"Updated application {job_id} to {new_stage}")
+            return 0
+        return 1
+
+    parser.print_help()
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,0 +1,240 @@
+# Engineering profile — Staff/Principal frontend & fullstack, remote, EOR.
+#
+# This file spells out every field explicitly so it doubles as the reference
+# template for new profiles. It is asserted equal to the built-in defaults by
+# test_profile_engineering_yaml_matches_defaults, so the two cannot drift.
+#
+# A real profile only needs the fields it actually changes — see
+# product-owner.yml for a minimal example.
+
+name: engineering
+timezone: America/Toronto
+
+# Webhook URLs are never stored here. Resolution order:
+#   webhook_env (if set) -> DISCORD_WEBHOOK_ENGINEERING -> DISCORD_WEBHOOK_URL
+webhook_env: null
+
+boards:
+    ashby:
+        - linear
+        - ramp
+        - vanta
+        - sentry
+        # React/Frontend focused
+        - retool
+        - supabase
+        - clerk
+        - plane
+        - n8n
+        # Sports & Analytics
+        - statsbomb
+        - sportradar
+        # Aviation & Aerospace
+        - archer-aviation
+        - joby-aviation
+        - volocopter
+        - lilium
+        # Additional coverage
+        - figma
+        - notion
+        - zapier
+        - github
+        - gitlab
+        - gitlab-dev
+    greenhouse:
+        - stripe
+        - figma
+        - cloudflare
+        - datadog
+        # React/Fullstack ecosystem
+        - chakra-ui
+        - hasura
+        - prisma
+        - remix
+        # Aviation/Aerospace/Flight
+        - bell-flight
+        - sikorsky
+        - garmin
+        # Sports Tech
+        - genius-sports
+        - opta-sports
+        - eleven-sports
+        # Additional coverage
+        - airbnb
+        - pinterest
+        - twitch
+        - notion
+    lever:
+        - postman
+        - vercel
+        # Sports & Data
+        - arcane
+        - statsbomb
+        # Aviation/Aerospace
+        - archer
+        - joby
+        # React-native ecosystem
+        - expo
+        - react-native
+        # Additional coverage
+        - github
+        - gitlab
+        - zapier
+
+# Minimum acceptable base salary per currency. Currencies absent from this map
+# are treated as below threshold.
+min_salary:
+    USD: 145000
+    CAD: 200000 # Staff/Principal & Senior remote target for Canada
+    EUR: 130000
+
+# Either tier qualifies a posting. Primary scores 15, secondary scores 12.
+primary_role_keywords:
+    - full stack
+    - fullstack
+    - frontend
+    - front end
+secondary_role_keywords:
+    - react
+    - typescript
+    - product engineer
+    - ui engineer
+    - web engineer
+    - application engineer
+    - vue.js
+    - next.js
+
+# Generic titles accepted only when the description also carries a signal.
+generic_title_fallbacks:
+    - software engineer
+require_in_description:
+    - react
+    - typescript
+    - frontend
+    - full stack
+    - fullstack
+    - next.js
+    - remix
+    - graphql
+
+# Rejected outright, checked before any include rule. Keep these phrase-level
+# ("platform engineer", not "platform") to avoid killing wanted titles.
+exclude_title_exact:
+    - platform engineer
+    - devops engineer
+    - site reliability engineer
+    - infrastructure engineer
+    - data engineer
+    - machine learning
+    - data science
+
+# Seniority markers worth 30 scoring points.
+high_level_keywords:
+    - staff
+    - principal
+    - lead
+
+# Quality-score signals: premium is 7 points each, good is 3, capped at 35.
+premium_signals:
+    - React
+    - TypeScript
+    - Next.js
+    - GraphQL
+    - FastAPI
+good_signals:
+    - Node.js
+    - Python
+    - PostgreSQL
+    - Redis
+    - Vue.js
+
+# Signals listed on the Discord card.
+key_signal_terms:
+    - React
+    - TypeScript
+    - Python
+    - FastAPI
+    - Node.js
+    - GraphQL
+    - Next.js
+    - PostgreSQL
+    - Redis
+    - AWS
+key_signal_fallback: Full Stack / Frontend Architecture
+
+# Work-mode classification inputs. Explicit hybrid/onsite markers in the
+# location beat remote language elsewhere in the posting.
+remote_positive:
+    - remote
+    - work from anywhere
+    - anywhere in north america
+    - distributed
+hybrid_markers:
+    - hybrid
+    - hybrid remote
+onsite_markers:
+    - on-site
+    - onsite
+    - in-office
+    - in office
+
+# Employer of Record signals. Deliberately narrow: only explicit EOR
+# terminology and named vendors, matched on word boundaries. Broad terms like
+# "canada", "international" and "contractor" were removed because they match
+# EEO boilerplate and office-location lists, which made this match everything.
+eor_signals:
+    - eor
+    - employer of record
+    - global payroll
+    - globally distributed payroll
+    - deel
+    - remote.com
+    - oyster hr
+    - velocity global
+    - globalization partners
+    - papaya global
+    - safeguard global
+    - workmotion
+    - multiplier.com
+
+# Accepted work modes: remote | hybrid | onsite | unknown.
+# Empty list disables work-mode filtering entirely.
+work_modes:
+    - remote
+
+# Accepted geographies, matched against location and the start of the
+# description. Empty list means anywhere.
+regions: []
+
+# Location phrases meaning "no geographic restriction". Only consulted when
+# `regions` is non-empty.
+region_wildcards:
+    - worldwide
+    - anywhere
+    - global
+    - international
+    - remote
+
+# Off by default: EOR support is rarely stated even when it exists, so
+# requiring it drops good postings rather than filtering bad ones. Detection
+# still runs and a positive hit is shown on the alert.
+require_eor: false
+
+# Which fetchers to run. The ATS sources need matching `boards` entries above;
+# the aggregators (remoteok, himalayas) are company-agnostic and need none.
+sources:
+    - ashby
+    - greenhouse
+    - lever
+
+# How deep to page into cursor-paginated aggregators. One page = one request.
+aggregator_max_pages: 10
+
+# Matches scoring below this still count in the run summary but get no card of
+# their own. Raise it when a broad source makes the channel noisy.
+alert_threshold: 0
+
+# Formatted with {title} and {company}.
+outreach_note_template: >-
+    Hi [Name], saw the {title} opening at {company} and wanted to connect
+    regarding frontend/fullstack architectural impact.
