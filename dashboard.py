@@ -2,74 +2,15 @@
 """
 Job Application Dashboard & Retrospective Analysis
 Provides insights into application quality over time and tech stack patterns.
+
+Reports on a single profile. Pass --profile <path/to.yml> to target a profile
+other than the built-in default.
 """
 
-import os
-import re
+import argparse
 from collections import defaultdict
-from datetime import datetime
-import psycopg2
 
-
-def get_db_connection():
-    """Connect to NeonDB PostgreSQL"""
-    db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        print("ERROR: DATABASE_URL not set")
-        return None
-    return psycopg2.connect(db_url)
-
-
-def load_applications_data():
-    """Load application data with history"""
-    conn = get_db_connection()
-    if not conn:
-        return [], []
-
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, job_id, company, role_title, job_url, applied_date, 
-                   current_stage, quality_score FROM applications
-            ORDER BY applied_date DESC
-        """)
-        apps = [
-            {
-                "id": row[0],
-                "job_id": row[1],
-                "company": row[2],
-                "role_title": row[3],
-                "job_url": row[4],
-                "applied_date": row[5],
-                "current_stage": row[6],
-                "quality_score": row[7],
-            }
-            for row in cursor.fetchall()
-        ]
-
-        cursor.execute("""
-            SELECT a.job_id, a.company, a.role_title, h.stage, h.updated_at
-            FROM applications_history h
-            JOIN applications a ON h.job_id = a.job_id
-            ORDER BY h.updated_at DESC
-        """)
-        history = [
-            {
-                "job_id": row[0],
-                "company": row[1],
-                "role_title": row[2],
-                "stage": row[3],
-                "updated_at": row[4],
-            }
-            for row in cursor.fetchall()
-        ]
-        cursor.close()
-        return apps, history
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return [], []
-    finally:
-        conn.close()
+from track_jobs import load_applications, load_profile
 
 
 def analyze_quality_distribution(apps: list[dict]) -> dict:
@@ -120,10 +61,10 @@ def analyze_tech_patterns(apps: list[dict]) -> dict:
     }
 
 
-def print_dashboard(apps: list[dict], history: list[dict]):
+def print_dashboard(apps: list[dict], profile_name: str):
     """Pretty-print the dashboard"""
     if not apps:
-        print("\n📊 No applications tracked yet.\n")
+        print(f"\n📊 No applications tracked yet for profile '{profile_name}'.\n")
         return
 
     quality = analyze_quality_distribution(apps)
@@ -131,7 +72,7 @@ def print_dashboard(apps: list[dict], history: list[dict]):
     tech = analyze_tech_patterns(apps)
 
     print("\n" + "=" * 70)
-    print("📊 JOB APPLICATION DASHBOARD".center(70))
+    print(f"📊 JOB APPLICATION DASHBOARD - {profile_name}".center(70))
     print("=" * 70)
 
     # Quality Score Summary
@@ -168,27 +109,41 @@ def print_dashboard(apps: list[dict], history: list[dict]):
     print("\n📅 RECENT APPLICATIONS (Last 10)")
     print("-" * 70)
     for app in apps[:10]:
-        score_badge = "⭐" if app["quality_score"] >= 85 else "✅" if app["quality_score"] >= 70 else "🔶"
+        score = app["quality_score"] or 0
+        if score >= 85:
+            score_badge = "⭐"
+        elif score >= 70:
+            score_badge = "✅"
+        else:
+            score_badge = "🔶"
         date_str = app["applied_date"].strftime("%Y-%m-%d") if app["applied_date"] else "N/A"
         print(
             f"   {score_badge} [{date_str}] {app['role_title']} @ {app['company']}"
         )
-        print(f"      Score: {app['quality_score']}/100 | Stage: {app['current_stage']}")
+        print(f"      Score: {score}/100 | Stage: {app['current_stage']}")
 
     print("\n" + "=" * 70 + "\n")
 
 
 def main():
     """Main dashboard display"""
-    print("Loading application data...")
-    apps, history = load_applications_data()
-    print_dashboard(apps, history)
+    parser = argparse.ArgumentParser(description="Job application dashboard")
+    parser.add_argument(
+        "--profile",
+        help="Path to a YAML profile file. Omit to use the built-in defaults.",
+    )
+    args = parser.parse_args()
+    profile_name = load_profile(args.profile).name
+
+    print(f"Loading application data for profile '{profile_name}'...")
+    apps = load_applications(profile_name)
+    print_dashboard(apps, profile_name)
 
     # Summary for strategic insights
     if apps:
         quality = analyze_quality_distribution(apps)
         if quality.get("average_quality"):
-            print(f"💡 STRATEGIC INSIGHT:")
+            print("💡 STRATEGIC INSIGHT:")
             print(f"   Your average application quality is {quality.get('average_quality')}/100")
 
             if quality.get("average_quality") >= 80:
