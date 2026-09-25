@@ -1,43 +1,52 @@
 # Remote Tech Job Tracker 🚀
 
-Automated pipeline to track **senior-level software engineering roles** at remote-friendly tech companies across multiple ATS platforms (Greenhouse, Lever, Ashby).
+Automated pipeline that tracks **senior-level roles** across multiple ATS
+platforms (Greenhouse, Lever, Ashby) and two aggregators, scores them against a
+profile you define, and cards the matches to Discord.
 
 ## Overview
 
-This project runs a **daily cron job** via GitHub Actions (twice daily at 9 AM and 9 PM UTC) that:
+A **GitHub Actions cron job** runs four times daily (03:00, 09:00, 15:00 and
+21:00 UTC) and:
 
-1. **Polls public ATS APIs** for job postings
-2. **Filters for senior engineering roles** eligible for work in **EMEA/Spain/Remote**
-3. **Notifies you via Discord Webhook** with matching opportunities
-4. **Runs for free** on GitHub's hosted runners (no infrastructure cost)
+1. **Polls public ATS APIs and aggregators** for job postings
+2. **Filters** by role title, work mode, region and salary floor — all driven
+   by a YAML profile, not hardcoded constants
+3. **Scores** each match 0–100 on signals, seniority, compensation and role fit
+4. **Cards the matches to Discord**
+5. **Runs for free** on GitHub's hosted runners
 
-### Target Companies
+The only paid dependency is a Postgres database (Neon's free tier is enough).
 
-#### Greenhouse Boards
+### Where jobs come from
 
-- Datadog, Cloudflare, GitLab, PostHog, Canonical, Elastic, Grafana, Figma, Notion
+| Source         | Needs company slugs? | Notes                                          |
+| -------------- | -------------------- | ---------------------------------------------- |
+| **Greenhouse** | yes                  | `?content=true`; descriptions are escaped HTML |
+| **Lever**      | yes                  | Public JSON API                                |
+| **Ashby**      | yes                  | Public JSON API, often has structured salary   |
+| **Remote OK**  | no                   | Aggregator; attribution required               |
+| **Himalayas**  | no                   | Aggregator, paginated; attribution required    |
 
-#### Lever Boards
+Curated ATS boards give the highest signal but need slugs, which each profile
+lists under `boards`. The aggregators need none and are the only option for a
+profile with no target companies. Both require visible attribution as a
+condition of free API access — the alert footer applies it automatically, so
+don't remove it.
 
-- Stripe, Anthropic, Typeform
-
-#### Ashby
-
-- Ramp, Rippling, Gemini
+The board lists live in the profiles, not in code: see the `boards` block in
+[profiles/engineering.yml](profiles/engineering.yml).
 
 ## Quick Start
 
 ### Step 1: Clone & Setup Local Environment
 
 ```bash
-# Clone the repo (or copy to your existing repo)
 cd peckham-rye
 
-# Create virtual environment (optional but recommended)
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -70,10 +79,10 @@ A **profile** is a YAML file describing who the search is for: which job titles
 count, the salary floor per currency, acceptable work modes and regions, which
 sources to poll, and which Discord webhook to alert. Two ship with the repo:
 
-| Profile                     | For                          | Sources                       |
-| --------------------------- | ---------------------------- | ----------------------------- |
-| `profiles/engineering.yml`  | Frontend/fullstack engineers | Curated Ashby/Greenhouse/Lever |
-| `profiles/product-owner.yml`| Product owners/managers      | Remote OK + Himalayas          |
+| Profile                      | For                          | Sources                        |
+| ---------------------------- | ---------------------------- | ------------------------------ |
+| `profiles/engineering.yml`   | Frontend/fullstack engineers | Curated Ashby/Greenhouse/Lever |
+| `profiles/product-owner.yml` | Product owners/managers      | Remote OK + Himalayas          |
 
 Omitting `--profile` uses the built-in defaults, which are identical to
 `profiles/engineering.yml`.
@@ -105,7 +114,7 @@ which the alert footer applies automatically.
 
 The tracker owns three tables — `seen_jobs`, `applications` and
 `applications_history` — and expects its own database. Give it a dedicated
-role rather than reusing an existing one: in Postgres a separate *database* is
+role rather than reusing an existing one: in Postgres a separate _database_ is
 not a security boundary, since any role with `CONNECT` can reach the others in
 the same project.
 
@@ -171,6 +180,12 @@ profile its own channel, add a secret named after it —
 `DISCORD_WEBHOOK_ENGINEERING` or `DISCORD_WEBHOOK_PRODUCT_OWNER`. Profiles
 without one fall back to `DISCORD_WEBHOOK_URL`.
 
+| Name                        | Kind   | Required | Purpose                    |
+| --------------------------- | ------ | -------- | -------------------------- |
+| `DISCORD_WEBHOOK_URL`       | secret | yes      | Fallback alert channel     |
+| `DATABASE_URL`              | secret | yes      | Postgres connection string |
+| `DISCORD_WEBHOOK_<PROFILE>` | secret | no       | Per-profile channel        |
+
 ### Step 6: Verify Workflow
 
 1. **Go to repo** → Actions tab
@@ -183,33 +198,64 @@ without one fall back to `DISCORD_WEBHOOK_URL`.
 
 ## Customization
 
+Everything below is a profile field. Edit the YAML — no code changes needed.
+[profiles/engineering.yml](profiles/engineering.yml) is an annotated dump of
+every available field.
+
 ### Add / Remove Companies
 
-Edit `track_jobs.py` and modify these constants:
-
-```python
-GREENHOUSE_BOARDS = ["datadog", "cloudflare", ...]  # Add more Greenhouse boards
-LEVER_BOARDS = ["stripe", ...]                      # Add more Lever boards
-ASHBY_COMPANIES = ["ramp", ...]                     # Add more Ashby companies
+```yaml
+boards:
+  greenhouse:
+    - stripe
+    - cloudflare
+  lever:
+    - postman
+  ashby:
+    - linear
 ```
 
-### Adjust Filtering Keywords
+The slug is the last path segment of a company's job board URL.
 
-Customize what roles you're interested in:
+### Adjust Filtering
 
-```python
-TITLE_LEVEL_KEYWORDS = ["senior", "staff", "principal", ...]
-TITLE_ROLE_KEYWORDS = ["backend", "frontend", "golang", ...]
-LOCATION_KEYWORDS = ["remote", "spain", "europe", ...]
+```yaml
+primary_role_keywords: [full stack, frontend] # scores 15
+secondary_role_keywords: [react, typescript] # scores 12
+exclude_title_exact: [platform engineer] # checked first, always wins
+generic_title_fallbacks: [software engineer] # needs a description signal
+require_in_description: [react, typescript]
+
+min_salary: { USD: 145000, CAD: 200000, EUR: 130000 }
+work_modes: [remote] # remote | hybrid | onsite | unknown
+regions: [] # empty means anywhere
+alert_threshold: 0 # counted but not carded below this score
 ```
+
+Exclusions are phrase-level and matched on word boundaries, so `platform
+engineer` won't kill `Frontend Engineer, Platform Team`.
+
+### Quality Scoring
+
+Each match scores 0–100 across four buckets:
+
+| Bucket       | Max | Driven by                                                |
+| ------------ | --- | -------------------------------------------------------- |
+| Signal match | 35  | `premium_signals` (7 each), `good_signals` (3 each)      |
+| Level match  | 30  | `high_level_keywords` in the title                       |
+| Salary fit   | 20  | verified against `min_salary`; unlisted or hourly = 5    |
+| Role focus   | 15  | `primary_role_keywords` 15, `secondary_role_keywords` 12 |
+
+A title accepted only via `generic_title_fallbacks` scores 0 for role focus,
+so those cap around 70 even when everything else matches.
 
 ### Change Execution Schedule
 
-Edit `.github/workflows/daily_tracker.yml`:
+Edit [.github/workflows/daily_tracker.yml](.github/workflows/daily_tracker.yml):
 
 ```yaml
 schedule:
-  - cron: "0 9,21 * * *" # Change these times (cron format, UTC)
+  - cron: "0 3,9,15,21 * * *" # UTC
 ```
 
 **Common cron patterns:**
@@ -218,45 +264,58 @@ schedule:
 - `'0 */6 * * *'` → Every 6 hours
 - `'0 8,14,20 * * *'` → 3 times daily (8 AM, 2 PM, 8 PM UTC)
 
-## Supported ATS Platforms
+## Supported Sources
 
-| Platform        | Status     | Companies | API Type                |
-| --------------- | ---------- | --------- | ----------------------- |
-| **Greenhouse**  | ✅ Active  | 9+        | Public JSON API         |
-| **Lever**       | ✅ Active  | 3+        | Public JSON API         |
-| **Ashby**       | ✅ Active  | 3+        | Public JSON API         |
-| **LinkedIn**    | 🚧 Planned | N/A       | Scraping (rate-limited) |
-| **Direct APIs** | 🚧 Planned | TBD       | Company-specific        |
+| Platform       | Status      | API Type                         |
+| -------------- | ----------- | -------------------------------- |
+| **Greenhouse** | ✅ Active   | Public JSON API                  |
+| **Lever**      | ✅ Active   | Public JSON API                  |
+| **Ashby**      | ✅ Active   | Public JSON API                  |
+| **Remote OK**  | ✅ Active   | Aggregator, attribution required |
+| **Himalayas**  | ✅ Active   | Aggregator, attribution required |
+| **Remotive**   | ❌ Rejected | Stale postings in live testing   |
+| **LinkedIn**   | 🚧 Planned  | Scraping (rate-limited)          |
 
 ## Expanding to New Platforms
 
-To add a new job board scraper:
+Fetchers are responsible for **normalization**, so ATS-specific field names
+never leak into filtering or scoring. Every fetcher emits this shape:
 
-1. **Create a new scraper function** following the existing pattern:
+```python
+{
+    "id": "greenhouse_pinterest_7301594",  # must be globally unique
+    "source": "greenhouse",
+    "company": "Pinterest",
+    "title": "Staff Software Engineer",
+    "location": "Remote, CA, US",
+    "workplace_type": "remote",
+    "content": "...",       # plain text, not HTML
+    "url": "https://...",
+    "comp_data": None,      # structured salary, when the ATS provides it
+}
+```
 
-   ```python
-   def check_[platform]() -> List[Dict[str, str]]:
-       """Fetch jobs from [platform]."""
-       matches = []
-       for company in [COMPANIES]:
-           url = f"https://api.[platform].com/jobs?..."
-           try:
-               res = requests.get(url, timeout=10)
-               jobs = res.json()
-               # Filter by keywords
-               # Add to matches
-           except Exception as e:
-               logger.error(f"Error: {e}")
-       return matches
-   ```
+To add a platform:
 
-2. **Add to main() orchestration**:
+1. Write `_normalize_<platform>(job, board) -> dict` returning that shape.
+   Run HTML descriptions through `html_to_text()` — leaving markup in place
+   breaks word-boundary signal matching and hides the salary block.
+2. Write `check_<platform>(seen_jobs, profile)` and register it in
+   `SOURCE_FETCHERS`.
+3. Add the source name to a profile's `sources` list.
+4. Add tests in [test_track_jobs.py](test_track_jobs.py) and run the suite.
 
-   ```python
-   all_jobs.extend(check_[platform]())
-   ```
+`process_job_posting` handles filtering, scoring and alerting from there.
 
-3. **Test locally** before pushing to GitHub
+## Tests
+
+```bash
+python -m pytest test_track_jobs.py -q
+```
+
+109 tests covering scoring, role filtering, salary parsing, HTML flattening,
+profile loading, work-mode and region logic, embeds and action-link signing.
+No network or database access, so they run in well under a second.
 
 ## Directory Structure
 
@@ -264,11 +323,20 @@ To add a new job board scraper:
 peckham-rye/
 ├── .github/
 │   └── workflows/
-│       └── daily_tracker.yml       # GitHub Actions cron configuration
-├── .gitignore
-├── requirements.txt                 # Python dependencies
-├── track_jobs.py                    # Main tracker script
-└── README.md                        # This file
+│       ├── daily_tracker.yml     # Scheduled tracker run (per-profile matrix)
+│       └── tests.yml             # CI test run
+├── profiles/
+│   ├── engineering.yml           # Annotated reference profile
+│   └── product-owner.yml         # Minimal profile, declares only diffs
+├── track_jobs.py                 # Fetching, filtering, scoring, alerting, DB
+├── tracker_service.py            # Action-link service (deployed separately)
+├── dashboard.py                  # Pipeline and quality reporting
+├── update_application.py         # Stage updates from the CLI
+├── migrate_db.py                 # Idempotent schema migrations
+├── test_track_jobs.py            # Test suite
+├── requirements.txt              # Tracker dependencies
+├── requirements-service.txt      # Adds FastAPI/uvicorn for the service
+└── README.md                     # This file
 ```
 
 ## Troubleshooting
@@ -294,7 +362,23 @@ peckham-rye/
 
 - Greenhouse & Lever allow generous rate limits (typically 100+ requests/min)
 - Ashby is similar, but monitor logs for 429 responses
-- If needed, add delays: `time.sleep(0.1)` between requests
+- Himalayas is paginated; `aggregator_max_pages` bounds how deep each run goes
+
+### Action link returns 400
+
+- `TRACKER_SIGNING_KEY` differs between GitHub Actions and the service. A
+  trailing newline from pasting is the usual cause.
+- Verify both sides agree:
+  ```bash
+  python3 -c "import hmac,hashlib,os;print(hmac.new(os.environ['TRACKER_SIGNING_KEY'].encode(),b'test',hashlib.sha256).hexdigest()[:16])"
+  ```
+  Run it in both environments — the 16 characters must match.
+- Links older than 14 days have expired; update the stage from the CLI.
+
+### Discord cards show no "Mark as Applied" button
+
+- `TRACKER_SIGNING_KEY` or `TRACKER_BASE_URL` is unset. The button is omitted
+  rather than pointing at a service that may not exist.
 
 ## Monitoring & Logs
 
@@ -312,12 +396,16 @@ peckham-rye/
 
 ## Future Enhancements
 
-- [ ] Database caching to track new vs. existing jobs
-- [ ] Deduplication across runs to reduce duplicate notifications
+- [x] Database caching to track new vs. existing jobs
+- [x] Deduplication across runs to reduce duplicate notifications
+- [x] Salary range extraction
+- [x] Metrics dashboard (quality distribution, pipeline stages)
+- [x] Multi-profile support
+- [x] One-click application tracking from Discord
+- [ ] Compare the midpoint or top of a salary range against the floor, not
+      just the low end — a $138k–$305k staff role is currently dropped
+- [ ] Score role focus for titles accepted via `generic_title_fallbacks`
 - [ ] Support for LinkedIn Recruiter / direct company APIs
-- [ ] Salary range extraction
-- [ ] Role-specific notifications (e.g., Rust roles only)
-- [ ] Metrics dashboard (jobs tracked, sources, locations)
 - [ ] Email fallback if Discord is unavailable
 
 ## License

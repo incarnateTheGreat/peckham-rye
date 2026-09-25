@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import html
+import json
 import os
 import re
+import time
 import zoneinfo
 from dataclasses import dataclass, field, fields
 from datetime import datetime
@@ -43,6 +46,7 @@ CURRENCY_BY_TOKEN = {
 }
 HOURLY_MARKERS = ("/hr", "/ hr", "/hour", "per hour", "hourly", "an hour")
 HOURLY_INTERVALS = ("hourly", "hour", "per_hour")
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 HTTP_USER_AGENT = "peckham-rye-job-tracker/1.0"
 
 # Remote OK and Himalayas both require visible attribution as a condition of
@@ -53,6 +57,10 @@ SOURCE_ATTRIBUTION = {
 }
 SALARY_STATUS_POINTS = {"VERIFIED": 20, "UNLISTED": 5, "HOURLY": 5}
 
+
+
+
+
 # Discord accepts at most 10 embeds per webhook message.
 DISCORD_EMBEDS_PER_MESSAGE = 10
 
@@ -60,7 +68,9 @@ _CURRENCY_TOKEN = r"\$|€|£|USD|CAD|EUR|GBP"
 # Allows an optional comma so both "145,000" and "145000" match, plus a "150k"
 # shorthand. The original pattern silently missed uncommaed six-digit figures.
 _AMOUNT = r"\d{2,3}(?:,?\d{3})?k?"
-_RANGE_SEP = r"\s*(?:-|–|to)\s*"
+# Em dash included because Greenhouse's pay-transparency widget renders its
+# range as "$177,185&mdash;$364,795 USD".
+_RANGE_SEP = r"\s*(?:-|–|—|to)\s*"
 
 # A currency token is required on one side or the other. Without it, ranges
 # like "10-15 years experience" would parse as a salary and get the posting
@@ -373,6 +383,9 @@ def get_webhook_url(profile: SearchProfile) -> str | None:
   return os.environ.get(per_profile_key) or os.environ.get("DISCORD_WEBHOOK_URL")
 
 
+
+
+
 # =============================================================================
 # STATE MANAGEMENT
 # =============================================================================
@@ -402,33 +415,6 @@ def init_db():
           job_id TEXT NOT NULL,
           created_at TIMESTAMP DEFAULT NOW(),
           PRIMARY KEY (profile, job_id)
-        )
-      """)
-      cursor.execute("""
-        CREATE TABLE IF NOT EXISTS applications (
-          id SERIAL PRIMARY KEY,
-          profile TEXT NOT NULL,
-          job_id TEXT NOT NULL,
-          company TEXT NOT NULL,
-          role_title TEXT NOT NULL,
-          job_url TEXT,
-          applied_date TIMESTAMP DEFAULT NOW(),
-          current_stage TEXT DEFAULT 'applied',
-          quality_score INTEGER,
-          notes TEXT,
-          created_at TIMESTAMP DEFAULT NOW(),
-          UNIQUE (profile, job_id)
-        )
-      """)
-      # History hangs off the application's surrogate key, so it inherits the
-      # profile scoping for free and cannot be orphaned by a delete.
-      cursor.execute("""
-        CREATE TABLE IF NOT EXISTS applications_history (
-          id SERIAL PRIMARY KEY,
-          application_id INTEGER NOT NULL
-            REFERENCES applications(id) ON DELETE CASCADE,
-          stage TEXT NOT NULL,
-          updated_at TIMESTAMP DEFAULT NOW()
         )
       """)
   except Exception as e:
@@ -475,96 +461,7 @@ def save_seen_jobs(seen_jobs: set[str], profile_name: str):
     conn.close()
 
 
-def save_application(
-    job_id: str,
-    company: str,
-    role_title: str,
-    job_url: str,
-    quality_score: int,
-    profile_name: str,
-):
-  """Save an application to the tracking database."""
-  conn = get_db_connection()
-  if not conn:
-    return
-  try:
-    with conn, conn.cursor() as cursor:
-      cursor.execute("""
-        INSERT INTO applications
-          (profile, job_id, company, role_title, job_url, quality_score)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (profile, job_id) DO NOTHING
-      """, (profile_name, job_id, company, role_title, job_url, quality_score))
-  except Exception as e:
-    print(f"Error saving application: {e}")
-  finally:
-    conn.close()
 
-
-def update_application_stage(job_id: str, new_stage: str, profile_name: str) -> bool:
-  """Update an application's stage and append a history row.
-
-  Returns False (writing no history) when the application doesn't exist for
-  this profile, so a typo'd job ID fails loudly instead of silently.
-  """
-  conn = get_db_connection()
-  if not conn:
-    return False
-  try:
-    with conn, conn.cursor() as cursor:
-      cursor.execute("""
-        UPDATE applications SET current_stage = %s
-        WHERE profile = %s AND job_id = %s
-        RETURNING id
-      """, (new_stage, profile_name, job_id))
-      row = cursor.fetchone()
-      if row is None:
-        print(f"No application found for job_id={job_id!r} in profile {profile_name!r}")
-        return False
-      cursor.execute(
-        "INSERT INTO applications_history (application_id, stage) VALUES (%s, %s)",
-        (row[0], new_stage),
-      )
-      return True
-  except Exception as e:
-    print(f"Error updating application stage: {e}")
-    return False
-  finally:
-    conn.close()
-
-
-def load_applications(profile_name: str) -> list[dict]:
-  """Load this profile's applications for dashboard/analysis."""
-  conn = get_db_connection()
-  if not conn:
-    return []
-  try:
-    with conn, conn.cursor() as cursor:
-      cursor.execute("""
-        SELECT id, job_id, company, role_title, job_url, applied_date,
-               current_stage, quality_score
-        FROM applications
-        WHERE profile = %s
-        ORDER BY applied_date DESC
-      """, (profile_name,))
-      return [
-          {
-              "id": row[0],
-              "job_id": row[1],
-              "company": row[2],
-              "role_title": row[3],
-              "job_url": row[4],
-              "applied_date": row[5],
-              "current_stage": row[6],
-              "quality_score": row[7],
-          }
-          for row in cursor.fetchall()
-      ]
-  except Exception as e:
-    print(f"Error loading applications: {e}")
-    return []
-  finally:
-    conn.close()
 
 
 # =============================================================================
@@ -829,10 +726,12 @@ def calculate_job_quality_score(
   """
   score = 0
 
-  # 1. Signal Match (35 points max)
+  # 1. Signal Match (35 points max). Scanned over the whole description, the
+  # same text extract_key_signals sees. A truncated window made the two
+  # disagree, so a card could list four signals and still score them as zero.
   content_lower = content.lower()
   title_lower = title.lower()
-  combined_text = f"{title_lower} {content_lower[:2000]}"
+  combined_text = f"{title_lower} {content_lower}"
 
   premium_matches = sum(
       1 for term in profile.premium_signals
@@ -905,7 +804,10 @@ def _score_badge(score: int) -> str:
   return f"🔹 {score}/100 (Low match)"
 
 
-def build_job_embed(match: dict, run_time_str: str) -> dict:
+def build_job_embed(
+    match: dict,
+    run_time_str: str,
+) -> dict:
   """Build the Discord embed for a single match."""
   salary_badge, color = _salary_badge(match)
 
@@ -951,6 +853,7 @@ def build_job_embed(match: dict, run_time_str: str) -> dict:
   }
 
 
+
 def send_discord_alerts(
     matches: list[dict],
     profile: SearchProfile = DEFAULT_PROFILE,
@@ -984,72 +887,6 @@ def send_discord_alerts(
       requests.post(webhook_url, json={"embeds": batch}, timeout=20)
     except Exception as e:
       print(f"Failed to post alert batch {i // DISCORD_EMBEDS_PER_MESSAGE}: {e}")
-
-
-def send_summary_alert(
-    matches_count: int,
-    run_time_str: str,
-    profile: SearchProfile = DEFAULT_PROFILE,
-):
-  """Send a silent summary card (no @mention) with tracker status."""
-  webhook_url = get_webhook_url(profile)
-  if not webhook_url:
-    return
-
-  # Get application status
-  apps = load_applications(profile.name)
-  stage_counts = {"applied": 0, "interviewing": 0, "rejected": 0, "offer": 0}
-  for app in apps:
-    if app["current_stage"] in stage_counts:
-      stage_counts[app["current_stage"]] += 1
-
-  # Determine color based on results
-  if matches_count > 0:
-    color = 0x3498DB  # Blue for results
-    summary_title = f"📊 Job Tracker Summary - {matches_count} New Match{'es' if matches_count != 1 else ''}"
-  else:
-    color = 0x95A5A6  # Gray for no results
-    summary_title = "📊 Job Tracker Summary - No New Matches"
-
-  embed = {
-      "title": summary_title,
-      "color": color,
-      "fields": [
-          {
-              "name": "🆕 Jobs Found This Run",
-              "value": f"{matches_count}",
-              "inline": True,
-          },
-          {
-              "name": "📋 Application Pipeline",
-              "value": (
-                  f"🔂 Applied: {stage_counts['applied']}\n"
-                  f"🗣️ Interviewing: {stage_counts['interviewing']}\n"
-                  f"❌ Rejected: {stage_counts['rejected']}\n"
-                  f"🎉 Offers: {stage_counts['offer']}"
-              ),
-              "inline": True,
-          },
-          {
-              "name": "📈 Total Applications Tracked",
-              "value": f"{len(apps)}",
-              "inline": True,
-          },
-      ],
-      "footer": {
-          "text": f"Last run: {run_time_str}"
-      },
-  }
-
-  try:
-    # Post as silent message (no @mention, no ping)
-    payload = {
-        "embeds": [embed],
-        "allowed_mentions": {"parse": []},  # No mentions at all
-    }
-    requests.post(webhook_url, json=payload, timeout=20)
-  except Exception as e:
-    print(f"Failed to post summary alert: {e}")
 
 
 def process_job_posting(
@@ -1168,6 +1005,25 @@ def _run_board_source(
   return matches
 
 
+def html_to_text(raw: str) -> str:
+  """Flatten an HTML job description into plain text for filtering and scoring.
+
+  Two unescape passes are deliberate. Greenhouse's `?content=true` payload is
+  an entity-escaped HTML document, so entities belonging to the markup itself
+  arrive escaped twice: the pay-transparency em dash is literally
+  `&amp;mdash;`. The first pass peels the API's encoding, the second resolves
+  the document's own entities.
+
+  Tags collapse to a space rather than being deleted. Removing them outright
+  would fuse `<li>React</li><li>Go</li>` into one token and defeat the
+  word-boundary matching that signal extraction and scoring rely on.
+  """
+  if not raw:
+    return ""
+  text = HTML_TAG_PATTERN.sub(" ", html.unescape(raw))
+  return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
 def _normalize_ashby(job: dict, board: str) -> dict:
   raw_id = job.get("id") or job.get("jobUrl")
   return {
@@ -1177,7 +1033,8 @@ def _normalize_ashby(job: dict, board: str) -> dict:
       "title": job.get("title", ""),
       "location": job.get("location", ""),
       "workplace_type": job.get("workplaceType", ""),
-      "content": job.get("descriptionPlain") or job.get("descriptionHtml") or "",
+      "content": job.get("descriptionPlain")
+      or html_to_text(job.get("descriptionHtml") or ""),
       "url": job.get("jobUrl") or job.get("applyUrl"),
       "comp_data": job.get("compensation"),
   }
@@ -1197,7 +1054,7 @@ def _normalize_greenhouse(job: dict, board: str) -> dict:
       "title": job.get("title", ""),
       "location": loc_name,
       "workplace_type": "remote" if "remote" in loc_name.lower() else "",
-      "content": job.get("content", ""),
+      "content": html_to_text(job.get("content", "")),
       "url": job.get("absolute_url"),
       "comp_data": None,
   }
@@ -1475,30 +1332,15 @@ def main():
     init_db()  # Initialize database on startup
     seen_jobs = load_seen_jobs(profile.name)
 
-    run_time_str = get_formatted_timestamp(profile.timezone)
-
     all_matches = collect_matches(seen_jobs, profile)
 
     if all_matches:
         print(f"Found {len(all_matches)} new matching roles. Dispatching alerts...")
         send_discord_alerts(all_matches, profile)
-        for m in all_matches:
-            # Save to application tracking database
-            save_application(
-                job_id=m["id"],
-                company=m["company"],
-                role_title=m["title"],
-                job_url=m["url"],
-                quality_score=m.get("quality_score", 0),
-                profile_name=profile.name,
-            )
         # Only the new IDs need writing; the rest are already stored.
         save_seen_jobs({m["id"] for m in all_matches}, profile.name)
     else:
         print("Execution complete. No new matching roles found.")
-
-    # Always send summary (regardless of results) for visibility
-    send_summary_alert(len(all_matches), run_time_str, profile)
 
 
 if __name__ == "__main__":

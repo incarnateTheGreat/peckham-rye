@@ -45,4 +45,9 @@ jobs:
                   # isn't configured yet.
                   DISCORD_WEBHOOK_URL: ${{ secrets[matrix.webhook_secret] || secrets.DISCORD_WEBHOOK_URL }}
                   DATABASE_URL: ${{ secrets.DATABASE_URL }}
+                  # Signs the "Mark as Applied" links. Must match the value on
+                  # the companion service, or every link 400s. Both optional:
+                  # unset simply omits the button.
+                  TRACKER_SIGNING_KEY: ${{ secrets.TRACKER_SIGNING_KEY }}
+                  TRACKER_BASE_URL: ${{ vars.TRACKER_BASE_URL }}
               run: python track_jobs.py --profile ${{ matrix.profile }}

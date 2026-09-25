@@ -16,7 +16,9 @@ from track_jobs import (
     calculate_job_quality_score,
     collect_matches,
     detect_work_mode,
+    extract_key_signals,
     get_webhook_url,
+    html_to_text,
     is_eor_supported,
     is_target_role,
     load_profile,
@@ -101,6 +103,31 @@ class TestQualityScore:
         
         diff = score_fs - score_gen
         assert diff == 15, f"Fullstack title should add 15 points, got diff={diff}"
+
+    def test_signals_past_2000_chars_are_scored(self):
+        """Scoring window must match the one extract_key_signals uses.
+
+        A truncated window let a card list signals it had scored as zero.
+        """
+        content = ("Pinterest is an equal opportunity employer. " * 80) + (
+            " We work in TypeScript, GraphQL, Python and Node.js."
+        )
+        assert len(content) > 2000
+
+        score = calculate_job_quality_score(
+            "Staff Software Engineer", content, "VERIFIED"
+        )
+        # Signals: TypeScript(7) + GraphQL(7) + Python(3) + Node.js(3) = 20
+        # Level: 30 (staff) | Salary: 20 (VERIFIED) | Role: 0
+        assert score == 70, f"Expected 70, got {score}"
+
+    def test_score_agrees_with_listed_signals(self):
+        """If the card lists signals, they must contribute points."""
+        content = ("Lorem ipsum boilerplate. " * 120) + " Built with React."
+        assert len(content) > 2000
+
+        assert "React" in extract_key_signals(content)
+        assert calculate_job_quality_score("Engineer", content, "UNLISTED") > 5
 
 
 # =============================================================================
@@ -252,6 +279,79 @@ class TestSalaryParsing:
         assert meets == True  # We don't reject unlisted, just flag them
         assert status == "UNLISTED"
         assert "Unlisted" in display
+
+    def test_em_dash_separated_range(self):
+        """Greenhouse pay widget uses an em dash, not a hyphen"""
+        text = "$177,185 — $364,795 USD"
+        meets, display, status = parse_salary_info(text, comp_data=None)
+        assert status == "VERIFIED"
+        assert meets == True
+
+    def test_em_dash_range_without_spaces(self):
+        """The widget emits no whitespace around the dash"""
+        meets, display, status = parse_salary_info(
+            "$177,185—$364,795 USD", comp_data=None
+        )
+        assert status == "VERIFIED"
+
+    def test_en_dash_range_still_parses(self):
+        """Widening the separator must not drop the existing en dash"""
+        meets, display, status = parse_salary_info(
+            "$150,000 – $180,000", comp_data=None
+        )
+        assert status == "VERIFIED"
+
+
+# =============================================================================
+# HTML FLATTENING TESTS
+# =============================================================================
+class TestHtmlToText:
+    """Greenhouse serves entity-escaped HTML; scoring needs plain text"""
+
+    def test_strips_escaped_markup(self):
+        raw = "&lt;p&gt;&lt;strong&gt;About us:&lt;/strong&gt;&lt;/p&gt;"
+        assert html_to_text(raw) == "About us:"
+
+    def test_resolves_doubly_escaped_entity(self):
+        """Entities inside the markup arrive escaped twice (&amp;mdash;)"""
+        raw = (
+            "&lt;span&gt;$177,185&lt;/span&gt;"
+            "&lt;span&gt;&amp;mdash;&lt;/span&gt;"
+            "&lt;span&gt;$364,795 USD&lt;/span&gt;"
+        )
+        assert html_to_text(raw) == "$177,185 — $364,795 USD"
+
+    def test_tags_become_spaces_not_nothing(self):
+        """Deleting tags would fuse adjacent list items into one token"""
+        raw = "&lt;li&gt;React&lt;/li&gt;&lt;li&gt;GraphQL&lt;/li&gt;"
+        assert html_to_text(raw) == "React GraphQL"
+
+    def test_empty_input(self):
+        assert html_to_text("") == ""
+
+    def test_plain_text_passes_through(self):
+        assert html_to_text("Staff Engineer, remote") == "Staff Engineer, remote"
+
+    def test_greenhouse_normalizer_flattens_content(self):
+        """End-to-end: escaped payload -> parseable salary"""
+        job = track_jobs._normalize_greenhouse(
+            {
+                "id": 1,
+                "title": "Staff Frontend Engineer",
+                "location": {"name": "Remote, CA, US"},
+                "content": (
+                    "&lt;div class=&quot;pay-range&quot;&gt;"
+                    "&lt;span&gt;$177,185&lt;/span&gt;"
+                    "&lt;span&gt;&amp;mdash;&lt;/span&gt;"
+                    "&lt;span&gt;$364,795 USD&lt;/span&gt;&lt;/div&gt;"
+                ),
+                "absolute_url": "https://example.com/1",
+            },
+            "pinterest",
+        )
+        assert "&lt;" not in job["content"]
+        _, _, status = parse_salary_info(job["content"], job["comp_data"])
+        assert status == "VERIFIED"
 
 
 # =============================================================================
@@ -658,6 +758,7 @@ class TestJobEmbed:
     @staticmethod
     def _match(**overrides):
         match = {
+            "id": "remoteok_12345",
             "title": "Senior Product Manager",
             "company": "Acme",
             "url": "https://example.com/job",
@@ -691,6 +792,8 @@ class TestJobEmbed:
         for source, expected in SOURCE_ATTRIBUTION.items():
             embed = build_job_embed(self._match(source=source), "now")
             assert expected in embed["footer"]["text"]
+
+
 
 
 # =============================================================================

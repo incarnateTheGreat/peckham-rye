@@ -14,6 +14,8 @@ Changes made:
   2. applications         gains `profile`; unique key becomes (profile, job_id)
   3. applications_history switches from `job_id` to `application_id`, with an
      ON DELETE CASCADE foreign key to applications(id)
+  4. applications.current_stage defaults to 'alerted' instead of 'applied',
+     and pre-existing rows that were never touched by hand are reclassified
 
 Existing rows are backfilled with --backfill-profile (default: "engineering"),
 on the assumption that everything recorded before this migration came from the
@@ -166,6 +168,60 @@ def migrate_history(cursor, steps: list[str]):
   """)
 
 
+def migrate_stage_default(cursor, steps: list[str]):
+  """Split the machine-written 'alerted' state out of 'applied'.
+
+  The tracker used to insert every carded role straight as 'applied', which
+  made the column a record of what the tracker did rather than what you did.
+  New rows now default to 'alerted'.
+
+  Backfill discriminator: update_application_stage is the only writer of
+  applications_history, so a row sitting at 'applied' with no history entry
+  was never touched by a human and must be an alert. A row you marked applied
+  by hand did write history and is left alone.
+  """
+  if not _table_exists(cursor, "applications"):
+    _log(steps, "applications does not exist yet - init_db() will create it")
+    return
+
+  cursor.execute("""
+    SELECT column_default FROM information_schema.columns
+    WHERE table_name = 'applications' AND column_name = 'current_stage'
+  """)
+  row = cursor.fetchone()
+  current_default = (row[0] or "") if row else ""
+
+  if "alerted" in current_default:
+    _log(steps, "applications.current_stage already defaults to 'alerted' - skipping")
+    return
+
+  _log(steps, "applications: changing current_stage default to 'alerted'")
+  cursor.execute(
+    "ALTER TABLE applications ALTER COLUMN current_stage SET DEFAULT 'alerted'"
+  )
+
+  cursor.execute("""
+    SELECT COUNT(*) FROM applications a
+    WHERE a.current_stage = 'applied'
+      AND NOT EXISTS (
+        SELECT 1 FROM applications_history h WHERE h.application_id = a.id
+      )
+  """)
+  untouched = cursor.fetchone()[0]
+
+  if untouched:
+    _log(steps, f"applications: reclassifying {untouched} untouched row(s) as 'alerted'")
+    cursor.execute("""
+      UPDATE applications a SET current_stage = 'alerted'
+      WHERE a.current_stage = 'applied'
+        AND NOT EXISTS (
+          SELECT 1 FROM applications_history h WHERE h.application_id = a.id
+        )
+    """)
+  else:
+    _log(steps, "applications: no untouched 'applied' rows to reclassify")
+
+
 def run_migration(backfill: str, dry_run: bool) -> int:
   conn = get_db_connection()
   if not conn:
@@ -181,6 +237,9 @@ def run_migration(backfill: str, dry_run: bool) -> int:
       # Postgres refuses to drop a constraint another object depends on.
       migrate_history(cursor, steps)
       migrate_applications(cursor, backfill, steps)
+      # Last: the backfill reads applications_history.application_id, which
+      # only exists once migrate_history has run.
+      migrate_stage_default(cursor, steps)
 
       if dry_run:
         conn.rollback()
