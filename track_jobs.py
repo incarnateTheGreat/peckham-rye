@@ -800,6 +800,51 @@ def calculate_job_quality_score(
   return min(100, score)
 
 
+def calculate_job_quality_components(
+    title: str,
+    content: str,
+    salary_status: str,
+    profile: SearchProfile = DEFAULT_PROFILE,
+) -> dict[str, int]:
+  """
+  Calculate job quality score components (signal, level, salary, role).
+  Returns a dict with individual scores and total.
+  """
+  components = {"signal": 0, "level": 0, "salary": 0, "role": 0}
+
+  # 1. Signal Match (35 points max)
+  content_lower = content.lower()
+  title_lower = title.lower()
+  combined_text = f"{title_lower} {content_lower}"
+
+  premium_matches = sum(
+      1 for term in profile.premium_signals
+      if re.search(r"\b" + re.escape(term.lower()) + r"\b", combined_text)
+  )
+  good_matches = sum(
+      1 for term in profile.good_signals
+      if re.search(r"\b" + re.escape(term.lower()) + r"\b", combined_text)
+  )
+
+  components["signal"] = min(35, (premium_matches * 7) + (good_matches * 3))
+
+  # 2. Level Match (30 points max)
+  if any(level in title_lower for level in profile.high_level_keywords):
+    components["level"] = 30
+
+  # 3. Salary Fit (20 points max)
+  components["salary"] = SALARY_STATUS_POINTS.get(salary_status, 0)
+
+  # 4. Role Focus (15 points max)
+  if any(role in title_lower for role in profile.primary_role_keywords):
+    components["role"] = 15
+  elif any(role in title_lower for role in profile.secondary_role_keywords):
+    components["role"] = 12
+
+  components["total"] = min(100, sum([components[k] for k in ["signal", "level", "salary", "role"]]))
+  return components
+
+
 # =============================================================================
 # UTILITIES & DISPATCHER
 # =============================================================================
@@ -833,14 +878,50 @@ def _salary_badge(match: dict) -> tuple[str, int]:
   return f"🔴 **{match['salary_text']}** (Below target)", 0xE74C3C
 
 
-def _score_badge(score: int) -> str:
-  if score >= 85:
-    return f"⭐ {score}/100 (Excellent match)"
-  if score >= 70:
-    return f"✅ {score}/100 (Strong match)"
-  if score >= 50:
-    return f"🔶 {score}/100 (Moderate match)"
-  return f"🔹 {score}/100 (Low match)"
+def _score_badge(score: int, components: dict[str, int] | None = None) -> str:
+  """Build score display. If components provided, show detailed breakdown with bars."""
+  if components is None:
+    # Fallback for when components aren't available
+    if score >= 85:
+      return f"⭐ {score}/100 (Excellent match)"
+    if score >= 70:
+      return f"✅ {score}/100 (Strong match)"
+    if score >= 50:
+      return f"🔶 {score}/100 (Moderate match)"
+    return f"🔹 {score}/100 (Low match)"
+
+  # Build component breakdown with aligned bars (20 chars wide)
+  bar_width = 20
+  def make_bar(value: int, max_pts: int) -> str:
+    filled = int((value / max_pts) * bar_width) if max_pts > 0 else 0
+    empty = bar_width - filled
+    return f"{'█' * filled}{'░' * empty}"
+
+  # Determine overall quality label and emoji
+  total = components["total"]
+  if total >= 85:
+    emoji = "⭐"
+    label = "Excellent Match"
+  elif total >= 70:
+    emoji = "✅"
+    label = "Strong Match"
+  elif total >= 50:
+    emoji = "🔶"
+    label = "Moderate Match"
+  else:
+    emoji = "🔹"
+    label = "Low Match"
+
+  # Build the detailed breakdown
+  lines = [
+      f"Signal:  {make_bar(components['signal'], 35)} ({components['signal']})",
+      f"Level:   {make_bar(components['level'], 30)} ({components['level']})",
+      f"Salary:  {make_bar(components['salary'], 20)} ({components['salary']})",
+      f"Role:    {make_bar(components['role'], 15)} ({components['role']})",
+      "─" * 40,
+      f"{emoji} **{total}/100** — {label}",
+  ]
+  return "\n".join(lines)
 
 
 def build_job_embed(
@@ -852,8 +933,8 @@ def build_job_embed(
 
   location_value = f"{match['location']} — {match['work_mode'].title()}"
   fields = [
-      {"name": "📊 Quality Score", "value": _score_badge(match["quality_score"]),
-       "inline": True},
+      {"name": "📊 Quality Breakdown", "value": _score_badge(match["quality_score"], match.get("score_components")),
+       "inline": False},
       {"name": "💰 Compensation", "value": salary_badge, "inline": True},
       {"name": "📍 Location & Work Type", "value": location_value,
        "inline": True},
@@ -969,9 +1050,10 @@ def process_job_posting(
     return None
 
   key_tech = extract_key_signals(content, profile)
-  quality_score = calculate_job_quality_score(
+  score_components = calculate_job_quality_components(
       title, content, salary_status, profile
   )
+  quality_score = score_components["total"]
   recruiter_url = (
       "https://www.linkedin.com/search/results/people/?keywords="
       f"{quote_plus(company)}%20recruiter"
@@ -993,6 +1075,7 @@ def process_job_posting(
       "salary_status": salary_status,
       "key_tech": key_tech,
       "quality_score": quality_score,
+      "score_components": score_components,
       "recruiter_url": recruiter_url,
       "outreach_note": outreach_note,
   }
