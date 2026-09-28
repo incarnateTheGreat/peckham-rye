@@ -1,0 +1,45 @@
+name: Board Health Check
+
+# Slug rot is silent and slow: a company migrates ATS, its board starts 404ing,
+# and the tracker keeps reporting success while quietly searching less. This
+# runs on its own schedule so a dead board surfaces on its own, and never gates
+# a tracker run.
+#
+# It makes live network calls, so it is kept out of the unit suite -- an ATS
+# hiccup should not turn the normal test run red.
+
+on:
+    workflow_dispatch:
+        inputs:
+            fail_on_empty:
+                description: "Also fail when a live board has zero postings"
+                type: boolean
+                default: false
+    schedule:
+        # 08:00 UTC on the 1st of each month. Drop this block to make the
+        # check purely manual.
+        - cron: "0 8 1 * *"
+
+permissions:
+    contents: read
+
+jobs:
+    check-boards:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Check out Repository
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+                  cache: "pip"
+
+            - name: Install Dependencies
+              run: pip install -r requirements.txt
+
+            - name: Probe Every Configured Board
+              run: |
+                  python check_boards.py \
+                    ${{ inputs.fail_on_empty && '--fail-on-empty' || '' }}

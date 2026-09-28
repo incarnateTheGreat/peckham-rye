@@ -14,72 +14,205 @@ timezone: America/Toronto
 #   webhook_env (if set) -> DISCORD_WEBHOOK_ENGINEERING -> DISCORD_WEBHOOK_URL
 webhook_env: null
 
+# Every slug below was verified to return HTTP 200 with a non-empty posting
+# list. A 404 is not "no new jobs" -- the board is skipped entirely, so the
+# company silently drops out of coverage. Each company lives on exactly one
+# ATS; never repeat a slug across platforms.
 boards:
     ashby:
         - linear
         - ramp
         - vanta
         - sentry
-        # React/Frontend focused
-        - retool
+        # Dev tools / frontend ecosystem
         - supabase
         - clerk
         - plane
         - n8n
-        # Sports & Analytics
-        - statsbomb
-        - sportradar
-        # Aviation & Aerospace
-        - archer-aviation
-        - joby-aviation
-        - volocopter
-        - lilium
-        # Additional coverage
-        - figma
         - notion
         - zapier
-        - github
-        - gitlab
-        - gitlab-dev
+        - render
+        - railway
+        - docker
+        - temporal
+        - confluent
+        - neon
+        - miro
+        - plaid
+        - 1password
+        # Canadian employers
+        - wealthsimple
+        - jobber
+        - benevity
+        - thinkific
+        - oyster
+        # Sports & Analytics
+        - teamworks
+        - strava
+        - whoop
+        # Aviation & Aerospace
+        - skydio
+        - boom
+        # Canadian employers (second wave)
+        - cohere # Toronto
+        - koho
+        - neofinancial
+        - float # posts "Remote - Canada" fullstack roles
+        - clearco
+        - loopio # Toronto
+        - miovision # Kitchener
+        - lightspeedhq # Montreal
+        - hopper # Montreal
+        - trulioo # Vancouver
+        - docebo # Toronto
+        - felix # Canadian telehealth
+        - jane # Jane App, Vancouver
+        # Dev tools / product engineering
+        - replit
+        - posthog
+        - clickup
+        - sanity
+        - fullstory
+        - helpscout
+        - gorgias
+        - dovetail
+        - mazedesign
+        - nylas
+        - substack
+        - patreon
+        # Fintech
+        - moderntreasury
+        - column
+        - persona
+        - middesk
+        - headway
     greenhouse:
         - stripe
         - figma
         - cloudflare
         - datadog
-        # React/Fullstack ecosystem
-        - chakra-ui
-        - hasura
-        - prisma
-        - remix
-        # Aviation/Aerospace/Flight
-        - bell-flight
-        - sikorsky
-        - garmin
-        # Sports Tech
-        - genius-sports
-        - opta-sports
-        - eleven-sports
-        # Additional coverage
         - airbnb
         - pinterest
         - twitch
-        - notion
-    lever:
-        - postman
+        # Dev tools / frontend ecosystem
         - vercel
-        # Sports & Data
-        - arcane
-        - statsbomb
-        # Aviation/Aerospace
-        - archer
-        - joby
-        # React-native ecosystem
-        - expo
-        - react-native
-        # Additional coverage
-        - github
         - gitlab
-        - zapier
+        - netlify
+        - grafanalabs
+        - elastic
+        - mongodb
+        - planetscale
+        - cockroachlabs
+        - webflow
+        - twilio
+        - mozilla
+        - discord
+        - reddit
+        # Fintech / product engineering
+        - robinhood
+        - coinbase
+        - affirm
+        - brex
+        - mercury
+        - gusto
+        - checkr
+        - faire
+        - remotecom
+        # Canadian employers
+        - hootsuite
+        - later
+        # Sports Tech
+        - hudl # StatsBomb was acquired by Hudl
+        - sportradar
+        - geniussports
+        - fanduel
+        - catapultsports
+        - zwift
+        - peloton
+        # Aviation/Aerospace/Flight
+        - archer
+        - rocketlab
+        - relativity
+        - astranis
+        - flyzipline
+        - eve
+        - planetlabs
+        - spire
+        # Canadian employers (second wave)
+        - pagerduty # Toronto engineering hub
+        - tailscale # Toronto
+        - leagueinc # Toronto
+        - d2l # Kitchener
+        - flipp # Toronto
+        - alayacare # Montreal
+        - shakepay # Montreal
+        - staffbase # absorbed Bananatag, Kelowna
+        # SaaS / product engineering
+        - asana
+        - smartsheet
+        - calendly
+        - typeform
+        - contentful
+        - storyblok
+        - algolia
+        - fastly
+        - chainguard
+        - jfrog
+        - circleci
+        - buildkite
+        - honeycomb
+        - newrelic
+        - launchdarkly
+        - amplitude
+        - mixpanel
+        - braze
+        - customerio
+        - klaviyo
+        - iterable
+        - intercom
+        # Fintech
+        - block
+        - wise
+        - monzo
+        - n26
+        - adyen
+        - lithic
+        - alloy
+        - ledgy
+        - carta
+        - globalizationpartners # EOR provider
+        # Health / education / media
+        - oscar
+        - duolingo
+        - khanacademy
+        - coursera
+        - bitmovin
+        # Sports Tech (second wave)
+        - playonsports
+        - seatgeek
+    # Verified Lever boards. Generic slugs were identity-checked against a
+    # sample posting first -- `porter`, `fly` and `d2l` on Lever are different
+    # companies than the names suggest and are deliberately absent.
+    lever:
+        # Canadian employers
+        - wattpad # Toronto
+        - eqbank # Toronto
+        - waveapps # Toronto
+        - achievers # Toronto
+        - getmaple # Maple telehealth, Toronto
+        - pointclickcare # Mississauga
+        - telesat # Ottawa
+        - kepler # Kepler Communications, Toronto
+        # Product / media
+        - spotify
+        - lyrahealth
+        - ro
+        - angellist
+        - cloudinary
+        # Aviation/Aerospace
+        - merlinlabs
+        - pyka
+        - elroyair
 
 # Minimum acceptable base salary per currency. Currencies absent from this map
 # are treated as below threshold.

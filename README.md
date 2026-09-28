@@ -324,18 +324,17 @@ peckham-rye/
 ├── .github/
 │   └── workflows/
 │       ├── daily_tracker.yml     # Scheduled tracker run (per-profile matrix)
+│       ├── board_health.yml      # Monthly/manual dead-board probe
 │       └── tests.yml             # CI test run
 ├── profiles/
 │   ├── engineering.yml           # Annotated reference profile
 │   └── product-owner.yml         # Minimal profile, declares only diffs
 ├── track_jobs.py                 # Fetching, filtering, scoring, alerting, DB
-├── tracker_service.py            # Action-link service (deployed separately)
+├── check_boards.py               # Live probe of every configured board slug
 ├── dashboard.py                  # Pipeline and quality reporting
-├── update_application.py         # Stage updates from the CLI
 ├── migrate_db.py                 # Idempotent schema migrations
 ├── test_track_jobs.py            # Test suite
 ├── requirements.txt              # Tracker dependencies
-├── requirements-service.txt      # Adds FastAPI/uvicorn for the service
 └── README.md                     # This file
 ```
 
@@ -364,21 +363,25 @@ peckham-rye/
 - Ashby is similar, but monitor logs for 429 responses
 - Himalayas is paginated; `aggregator_max_pages` bounds how deep each run goes
 
-### Action link returns 400
+### A board logs "HTTP 404"
 
-- `TRACKER_SIGNING_KEY` differs between GitHub Actions and the service. A
-  trailing newline from pasting is the usual cause.
-- Verify both sides agree:
-  ```bash
-  python3 -c "import hmac,hashlib,os;print(hmac.new(os.environ['TRACKER_SIGNING_KEY'].encode(),b'test',hashlib.sha256).hexdigest()[:16])"
-  ```
-  Run it in both environments — the 16 characters must match.
-- Links older than 14 days have expired; update the stage from the CLI.
+That company has no board on that ATS, so it was skipped entirely. This is a
+coverage gap, not an empty result — a live board returns HTTP 200 and its
+postings are then filtered normally. Move the slug to the platform the company
+actually uses, or drop it.
 
-### Discord cards show no "Mark as Applied" button
+Slug rot is silent, so `check_boards.py` probes every configured slug and
+exits non-zero if any are dead:
 
-- `TRACKER_SIGNING_KEY` or `TRACKER_BASE_URL` is unset. The button is omitted
-  rather than pointing at a service that may not exist.
+```bash
+python check_boards.py                        # every profile
+python check_boards.py --profile profiles/engineering.yml
+python check_boards.py --fail-on-empty        # also flag 0-posting boards
+```
+
+The **Board Health Check** workflow runs it monthly, and on demand from the
+Actions tab. It is kept out of the unit suite on purpose: it makes live calls,
+and an ATS hiccup should not turn the normal test run red.
 
 ## Monitoring & Logs
 

@@ -5,6 +5,9 @@ Tests: quality score calculation, role filtering, salary parsing,
 profile loading, work-mode and region filtering
 """
 
+import dataclasses
+import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -26,6 +29,7 @@ from track_jobs import (
     matches_work_mode,
     parse_salary_info,
 )
+import check_boards
 import track_jobs
 
 PROFILES_DIR = Path(__file__).parent / "profiles"
@@ -749,6 +753,186 @@ class TestSourceDispatch:
         profile = load_profile(str(PROFILES_DIR / "product-owner.yml"))
         for source in profile.sources:
             assert source in SOURCE_FETCHERS
+
+
+# =============================================================================
+# BOARD CONFIGURATION
+# =============================================================================
+class TestBoardConfiguration:
+    """Structural invariants for the curated ATS board lists.
+
+    A misfiled slug fails quietly: the board 404s, the fetcher skips it, and
+    the company drops out of coverage without anything going red. These checks
+    run offline, so they prove only internal consistency -- whether a slug is
+    still live has to be confirmed against the APIs.
+    """
+
+    def test_slugs_are_well_formed(self):
+        """Slugs go straight into a URL path, so no spaces, case or URLs."""
+        for source, slugs in DEFAULT_PROFILE.boards.items():
+            for slug in slugs:
+                assert re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug), (
+                    f"{source} slug {slug!r} is not a bare lowercase slug"
+                )
+
+    def test_no_slug_repeats_within_a_platform(self):
+        """A duplicate costs a wasted request and double-counts the company."""
+        for source, slugs in DEFAULT_PROFILE.boards.items():
+            repeated = sorted(s for s, n in Counter(slugs).items() if n > 1)
+            assert not repeated, f"{source} lists {repeated} more than once"
+
+    def test_no_slug_is_shared_across_platforms(self):
+        """A company uses one ATS; the copy filed under the other always 404s.
+
+        This is the exact shape of the original bad config, where `figma`,
+        `github`, `gitlab`, `notion`, `statsbomb` and `zapier` were each listed
+        on two platforms and the wrong copy 404ed on every run.
+        """
+        owners: dict[str, list[str]] = {}
+        for source, slugs in DEFAULT_PROFILE.boards.items():
+            for slug in slugs:
+                owners.setdefault(slug, []).append(source)
+
+        shared = {s: p for s, p in owners.items() if len(p) > 1}
+        assert not shared, f"slugs claimed by multiple platforms: {shared}"
+
+    def test_every_platform_with_boards_is_an_enabled_source(self):
+        """Boards under a source that is not enabled are never polled."""
+        for source, slugs in DEFAULT_PROFILE.boards.items():
+            if slugs:
+                assert source in DEFAULT_PROFILE.sources, (
+                    f"{source} has {len(slugs)} boards but is not in sources"
+                )
+
+    def test_every_board_platform_has_a_fetcher(self):
+        for source in DEFAULT_PROFILE.boards:
+            assert source in SOURCE_FETCHERS
+
+
+# =============================================================================
+# DEAD BOARD HANDLING
+# =============================================================================
+class _StubResponse:
+    """Minimal stand-in for requests.Response."""
+
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class TestDeadBoardHandling:
+    """A dead board must be skipped, logged, and never abort the run.
+
+    An earlier version returned `continue` on a non-200 without printing, so a
+    board that had 404ed for months was indistinguishable from one with no
+    matching roles.
+    """
+
+    @staticmethod
+    def _ashby_payload():
+        return {
+            "jobs": [{
+                "id": "job-1",
+                "title": "Staff Frontend Engineer",
+                "location": "Remote - Canada",
+                "workplaceType": "Remote",
+                "descriptionPlain": "React and TypeScript across the stack.",
+                "jobUrl": "https://example.com/job",
+            }]
+        }
+
+    @staticmethod
+    def _profile():
+        return dataclasses.replace(
+            DEFAULT_PROFILE,
+            boards={"ashby": ["deadboard", "liveboard"]},
+            sources=["ashby"],
+        )
+
+    def test_dead_board_is_reported_not_swallowed(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            track_jobs.requests, "get",
+            lambda url, **kwargs: _StubResponse(404),
+        )
+        assert collect_matches(set(), self._profile()) == []
+        assert "Ashby board deadboard: HTTP 404" in capsys.readouterr().out
+
+    def test_remaining_boards_are_polled_after_a_dead_one(self, monkeypatch):
+        def fake_get(url, **kwargs):
+            if "liveboard" in url:
+                return _StubResponse(200, self._ashby_payload())
+            return _StubResponse(404)
+
+        monkeypatch.setattr(track_jobs.requests, "get", fake_get)
+        matches = collect_matches(set(), self._profile())
+        assert [m["company"] for m in matches] == ["Liveboard"]
+
+    def test_live_board_with_no_postings_is_not_reported(
+        self, monkeypatch, capsys
+    ):
+        """200 with zero postings is an ordinary empty result, not an error."""
+        monkeypatch.setattr(
+            track_jobs.requests, "get",
+            lambda url, **kwargs: _StubResponse(200, {"jobs": []}),
+        )
+        assert collect_matches(set(), self._profile()) == []
+        assert "HTTP" not in capsys.readouterr().out
+
+    def test_network_error_does_not_abort_the_run(self, monkeypatch, capsys):
+        def fake_get(url, **kwargs):
+            if "liveboard" in url:
+                return _StubResponse(200, self._ashby_payload())
+            raise OSError("connection reset by peer")
+
+        monkeypatch.setattr(track_jobs.requests, "get", fake_get)
+        matches = collect_matches(set(), self._profile())
+        assert [m["company"] for m in matches] == ["Liveboard"]
+        assert "Error fetching Ashby board deadboard" in capsys.readouterr().out
+
+
+# =============================================================================
+# BOARD HEALTH CHECK
+# =============================================================================
+class TestBoardHealthClassification:
+    """The health check must keep 'dead' and 'empty' apart.
+
+    Conflating them is what hid the original problem: a 404 board is never
+    polled and silently shrinks coverage, while a 200 board with no postings
+    was polled correctly and simply had nothing open.
+    """
+
+    def test_dead_board_is_a_failure(self):
+        outcome, detail = check_boards.classify(404, None)
+        assert outcome == check_boards.DEAD
+        assert "404" in detail
+
+    def test_live_board_with_postings_is_healthy(self):
+        outcome, _ = check_boards.classify(200, 12)
+        assert outcome == check_boards.OK
+
+    def test_live_board_with_no_postings_is_not_dead(self):
+        outcome, _ = check_boards.classify(200, 0)
+        assert outcome == check_boards.EMPTY
+
+    def test_unreachable_board_is_distinct_from_dead(self):
+        """A network fault says nothing about whether the slug is valid."""
+        outcome, _ = check_boards.classify(None, None)
+        assert outcome == check_boards.UNREACHABLE
+
+    def test_malformed_slug_is_never_requested(self):
+        """Slugs are interpolated into a URL path, so they are validated."""
+        source, slug, outcome, _ = check_boards.probe("ashby", "../etc/passwd")
+        assert (source, slug, outcome) == (
+            "ashby", "../etc/passwd", check_boards.MALFORMED,
+        )
+
+    def test_every_configured_ats_has_an_endpoint(self):
+        """The checker probes the same URLs the tracker polls."""
+        for source in DEFAULT_PROFILE.boards:
+            assert source in track_jobs.BOARD_ENDPOINTS
 
 
 # =============================================================================

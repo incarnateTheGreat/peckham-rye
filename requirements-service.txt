@@ -1,6 +1,0 @@
-# Dependencies for the companion action-link service (tracker_service.py).
-# Kept separate from requirements.txt so the GitHub Actions tracker run does
-# not install a web stack it never imports.
--r requirements.txt
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0

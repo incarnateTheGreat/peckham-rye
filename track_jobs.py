@@ -99,41 +99,80 @@ class SearchProfile:
   webhook_env: str | None = None
   timezone: str = "America/Toronto"
 
-  # Target company slugs, keyed by ATS name.
+  # Target company slugs, keyed by ATS name. Every slug here was verified to
+  # return HTTP 200 with a non-empty posting list -- a company only ever lives
+  # on the one ATS it actually uses, so do not repeat a slug across platforms.
   boards: dict[str, list[str]] = field(
       default_factory=lambda: {
           "ashby": [
               "linear", "ramp", "vanta", "sentry",
-              # React/Frontend focused
-              "retool", "supabase", "clerk", "plane", "n8n",
+              # Dev tools / frontend ecosystem
+              "supabase", "clerk", "plane", "n8n", "notion", "zapier",
+              "render", "railway", "docker", "temporal", "confluent", "neon",
+              "miro", "plaid", "1password",
+              # Canadian employers
+              "wealthsimple", "jobber", "benevity", "thinkific", "oyster",
               # Sports & Analytics
-              "statsbomb", "sportradar",
+              "teamworks", "strava", "whoop",
               # Aviation & Aerospace
-              "archer-aviation", "joby-aviation", "volocopter", "lilium",
-              # Additional coverage
-              "figma", "notion", "zapier", "github", "gitlab", "gitlab-dev",
+              "skydio", "boom",
+              # Canadian employers (second wave)
+              "cohere", "koho", "neofinancial", "float", "clearco",
+              "loopio", "miovision", "lightspeedhq", "hopper", "trulioo",
+              "docebo", "felix", "jane",
+              # Dev tools / product engineering
+              "replit", "posthog", "clickup", "sanity", "fullstory",
+              "helpscout", "gorgias", "dovetail", "mazedesign", "nylas",
+              "substack", "patreon",
+              # Fintech
+              "moderntreasury", "column", "persona", "middesk", "headway",
           ],
           "greenhouse": [
               "stripe", "figma", "cloudflare", "datadog",
-              # React/Fullstack ecosystem
-              "chakra-ui", "hasura", "prisma", "remix",
-              # Aviation/Aerospace/Flight
-              "bell-flight", "sikorsky", "garmin",
+              "airbnb", "pinterest", "twitch",
+              # Dev tools / frontend ecosystem
+              "vercel", "gitlab", "netlify", "grafanalabs", "elastic",
+              "mongodb", "planetscale", "cockroachlabs", "webflow", "twilio",
+              "mozilla", "discord", "reddit",
+              # Fintech / product engineering
+              "robinhood", "coinbase", "affirm", "brex", "mercury", "gusto",
+              "checkr", "faire", "remotecom",
+              # Canadian employers
+              "hootsuite", "later",
               # Sports Tech
-              "genius-sports", "opta-sports", "eleven-sports",
-              # Additional coverage
-              "airbnb", "pinterest", "twitch", "notion",
+              "hudl", "sportradar", "geniussports", "fanduel",
+              "catapultsports", "zwift", "peloton",
+              # Aviation/Aerospace/Flight
+              "archer", "rocketlab", "relativity", "astranis", "flyzipline",
+              "eve", "planetlabs", "spire",
+              # Canadian employers (second wave)
+              "pagerduty", "tailscale", "leagueinc", "d2l", "flipp",
+              "alayacare", "shakepay", "staffbase",
+              # SaaS / product engineering
+              "asana", "smartsheet", "calendly", "typeform", "contentful",
+              "storyblok", "algolia", "fastly", "chainguard", "jfrog",
+              "circleci", "buildkite", "honeycomb", "newrelic",
+              "launchdarkly", "amplitude", "mixpanel", "braze",
+              "customerio", "klaviyo", "iterable", "intercom",
+              # Fintech
+              "block", "wise", "monzo", "n26", "adyen", "lithic", "alloy",
+              "ledgy", "carta", "globalizationpartners",
+              # Health / education / media
+              "oscar", "duolingo", "khanacademy", "coursera", "bitmovin",
+              # Sports Tech (second wave)
+              "playonsports", "seatgeek",
           ],
+          # Verified Lever boards. Generic slugs were identity-checked against
+          # a sample posting first -- `porter`, `fly` and `d2l` on Lever are
+          # different companies than the names suggest, so they are absent.
           "lever": [
-              "postman", "vercel",
-              # Sports & Data
-              "arcane", "statsbomb",
+              # Canadian employers
+              "wattpad", "eqbank", "waveapps", "achievers", "getmaple",
+              "pointclickcare", "telesat", "kepler",
+              # Product / media
+              "spotify", "lyrahealth", "ro", "angellist", "cloudinary",
               # Aviation/Aerospace
-              "archer", "joby",
-              # React-native ecosystem
-              "expo", "react-native",
-              # Additional coverage
-              "github", "gitlab", "zapier",
+              "merlinlabs", "pyka", "elroyair",
           ],
       }
   )
@@ -1075,6 +1114,31 @@ def _normalize_lever(job: dict, board: str) -> dict:
   }
 
 
+# Per-ATS board endpoint and payload shape. Hoisted to module level so the
+# board health check can exercise exactly the URLs the tracker polls -- an
+# inline lambda would let the checker and the fetcher drift apart silently,
+# which is the same class of bug the check exists to catch.
+BOARD_ENDPOINTS = {
+    "ashby": {
+        "url_for": lambda b: (
+            f"https://api.ashbyhq.com/posting-api/job-board/{b}"
+            "?includeCompensation=true"
+        ),
+        "jobs_from": lambda payload: payload.get("jobs", []),
+    },
+    "greenhouse": {
+        "url_for": lambda b: (
+            f"https://boards-api.greenhouse.io/v1/boards/{b}/jobs?content=true"
+        ),
+        "jobs_from": lambda payload: payload.get("jobs", []),
+    },
+    "lever": {
+        "url_for": lambda b: f"https://api.lever.co/v0/postings/{b}?mode=json",
+        "jobs_from": lambda payload: payload,
+    },
+}
+
+
 def check_ashby(
     seen_jobs: set,
     profile: SearchProfile = DEFAULT_PROFILE,
@@ -1083,11 +1147,8 @@ def check_ashby(
       "ashby",
       profile,
       seen_jobs,
-      url_for=lambda b: (
-          f"https://api.ashbyhq.com/posting-api/job-board/{b}"
-          "?includeCompensation=true"
-      ),
-      jobs_from=lambda payload: payload.get("jobs", []),
+      url_for=BOARD_ENDPOINTS["ashby"]["url_for"],
+      jobs_from=BOARD_ENDPOINTS["ashby"]["jobs_from"],
       normalize=_normalize_ashby,
   )
 
@@ -1100,10 +1161,8 @@ def check_greenhouse(
       "greenhouse",
       profile,
       seen_jobs,
-      url_for=lambda b: (
-          f"https://boards-api.greenhouse.io/v1/boards/{b}/jobs?content=true"
-      ),
-      jobs_from=lambda payload: payload.get("jobs", []),
+      url_for=BOARD_ENDPOINTS["greenhouse"]["url_for"],
+      jobs_from=BOARD_ENDPOINTS["greenhouse"]["jobs_from"],
       normalize=_normalize_greenhouse,
   )
 
@@ -1116,8 +1175,8 @@ def check_lever(
       "lever",
       profile,
       seen_jobs,
-      url_for=lambda b: f"https://api.lever.co/v0/postings/{b}?mode=json",
-      jobs_from=lambda payload: payload,
+      url_for=BOARD_ENDPOINTS["lever"]["url_for"],
+      jobs_from=BOARD_ENDPOINTS["lever"]["jobs_from"],
       normalize=_normalize_lever,
   )
 
