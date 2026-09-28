@@ -57,8 +57,34 @@ SOURCE_ATTRIBUTION = {
 }
 SALARY_STATUS_POINTS = {"VERIFIED": 20, "UNLISTED": 5, "HOURLY": 5}
 
+# Hiring reach: how reachable a posting is for a candidate outside the
+# employer's home geography. Deliberately NOT a filter -- a posting can state
+# a hard requirement and still flex for the right candidate, and nothing in
+# the text distinguishes the two. These tiers only annotate and order cards.
+#   OPEN       explicit cross-border mechanism named (EOR, vendor, anywhere)
+#   NEGOTIABLE an obstacle is stated but it is an entity/payroll one
+#   UNSTATED   nothing said either way -- the common case
+#   BLOCKED    legally immovable (clearance, citizenship, export control)
+HIRING_REACH_OPEN = "open"
+HIRING_REACH_NEGOTIABLE = "negotiable"
+HIRING_REACH_UNSTATED = "unstated"
+HIRING_REACH_BLOCKED = "blocked"
 
+# Card ordering: best-reachable first, legally-blocked last.
+HIRING_REACH_ORDER = {
+    HIRING_REACH_OPEN: 0,
+    HIRING_REACH_NEGOTIABLE: 1,
+    HIRING_REACH_UNSTATED: 2,
+    HIRING_REACH_BLOCKED: 3,
+}
 
+# Rendered on the alert. UNSTATED shows nothing: absence of a claim must not
+# be presented as a finding, the same rule the EOR field follows.
+HIRING_REACH_BADGES = {
+    HIRING_REACH_OPEN: "🟢 Hires across borders",
+    HIRING_REACH_NEGOTIABLE: "🟡 Location stated — worth asking",
+    HIRING_REACH_BLOCKED: "🔴 Legally restricted",
+}
 
 
 # Discord accepts at most 10 embeds per webhook message.
@@ -321,6 +347,52 @@ class SearchProfile:
           "safeguard global",
           "workmotion",
           "multiplier.com",
+      ]
+  )
+
+  # Legally immovable barriers. A cleared/citizenship-gated role will not open
+  # up for a strong candidate, so this is the only tier worth treating as a
+  # genuine no. Keep it short: every entry here must be non-negotiable in fact,
+  # not merely firmly worded.
+  hiring_blockers: list[str] = field(
+      default_factory=lambda: [
+          "security clearance",
+          "active clearance",
+          "ts/sci",
+          "itar",
+          "export control",
+          "us citizens only",
+          "u.s. citizens only",
+          "must be a us citizen",
+          "must be a u.s. citizen",
+          "citizenship is required",
+      ]
+  )
+
+  # A stated location/payroll requirement. Counter-intuitively this is a
+  # POSITIVE signal versus silence: the employer has thought about where it can
+  # employ people, so there is a named obstacle to negotiate. Visa-sponsorship
+  # language lives here on purpose -- it concerns relocating someone onto the
+  # employer's soil, which is unrelated to employing them where they already
+  # are, so it must never be treated as a blocker.
+  hiring_gatekeepers: list[str] = field(
+      default_factory=lambda: [
+          "must reside in",
+          "must live in",
+          "must be located in",
+          "must be based in",
+          "must be physically located",
+          "candidates must be located",
+          "authorized to work in",
+          "work authorization",
+          "unable to provide sponsorship",
+          "unable to sponsor",
+          "do not provide sponsorship",
+          "without sponsorship",
+          "no visa sponsorship",
+          "cannot hire outside",
+          "do not have an entity",
+          "legal entity",
       ]
   )
 
@@ -627,6 +699,45 @@ def is_eor_supported(
       re.search(r"\b" + re.escape(sig) + r"\b", combined)
       for sig in profile.eor_signals
   )
+
+
+def detect_hiring_reach(
+    location: str,
+    description: str,
+    profile: SearchProfile = DEFAULT_PROFILE,
+) -> str:
+  """Classify how reachable a posting is from outside the employer's geography.
+
+  Returns exactly one of HIRING_REACH_{OPEN,NEGOTIABLE,UNSTATED,BLOCKED}.
+  This annotates and orders cards; it deliberately drops nothing. A detector
+  can only observe what a posting *states*, and plenty of employers state a
+  firm location and then hire the right candidate anyway -- those postings are
+  textually identical to the ones that mean it.
+
+  Precedence is blocked > open > negotiable. A legal bar cannot be talked
+  around even by an employer that also advertises EOR, so it wins outright.
+
+  Unlike the work-mode and region checks, this scans the FULL description:
+  restriction language sits in the footer next to the EEO boilerplate, which a
+  leading-500-character window never reaches.
+  """
+  combined = f"{location or ''} {description or ''}".lower()
+
+  def _stated(phrases: list[str]) -> bool:
+    return any(
+        re.search(r"\b" + re.escape(p) + r"\b", combined) for p in phrases
+    )
+
+  if _stated(profile.hiring_blockers):
+    return HIRING_REACH_BLOCKED
+
+  if is_eor_supported(location, description, profile):
+    return HIRING_REACH_OPEN
+
+  if _stated(profile.hiring_gatekeepers):
+    return HIRING_REACH_NEGOTIABLE
+
+  return HIRING_REACH_UNSTATED
 
 
 def parse_salary_info(
@@ -960,6 +1071,13 @@ def build_job_embed(
         {"name": "🌍 EOR", "value": "Supports EOR", "inline": True}
     )
 
+  # UNSTATED renders nothing, for the same reason: the posting made no claim.
+  reach_badge = HIRING_REACH_BADGES.get(match.get("hiring_reach"))
+  if reach_badge:
+    fields.append(
+        {"name": "🧭 Hiring Reach", "value": reach_badge, "inline": True}
+    )
+
   fields.extend([
       {"name": "🛠️ Key Signals", "value": match.get("key_tech") or "Not specified",
        "inline": True},
@@ -1009,6 +1127,17 @@ def send_discord_alerts(
     return
 
   run_time_str = get_formatted_timestamp(profile.timezone)
+
+  # Most-reachable first, then best-scoring. Nothing is dropped by reach; a
+  # legally-blocked posting still gets a card, it just lands at the bottom.
+  alertable.sort(
+      key=lambda m: (
+          HIRING_REACH_ORDER.get(
+              m.get("hiring_reach"), HIRING_REACH_ORDER[HIRING_REACH_UNSTATED]
+          ),
+          -m.get("quality_score", 0),
+      )
+  )
   embeds = [build_job_embed(m, run_time_str) for m in alertable]
 
   # Discord accepts up to 10 embeds per message. Batching keeps a broad
@@ -1054,6 +1183,9 @@ def process_job_posting(
   if profile.require_eor and not eor_detected:
     return None
 
+  # Annotation only -- never a rejection. See detect_hiring_reach.
+  hiring_reach = detect_hiring_reach(location, content, profile)
+
   _, salary_text, salary_status = parse_salary_info(
       content, job.get("comp_data"), profile
   )
@@ -1083,6 +1215,7 @@ def process_job_posting(
       "location": location or "Remote",
       "work_mode": work_mode,
       "eor_detected": eor_detected,
+      "hiring_reach": hiring_reach,
       "salary_text": salary_text,
       "salary_status": salary_status,
       "key_tech": key_tech,

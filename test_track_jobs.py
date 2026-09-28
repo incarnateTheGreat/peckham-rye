@@ -20,6 +20,7 @@ from track_jobs import (
     calculate_job_quality_components,
     calculate_job_quality_score,
     collect_matches,
+    detect_hiring_reach,
     detect_work_mode,
     extract_key_signals,
     get_webhook_url,
@@ -570,6 +571,138 @@ class TestEorDetection:
 
 
 # =============================================================================
+# HIRING REACH TESTS
+# =============================================================================
+class TestHiringReach:
+    """detect_hiring_reach annotates; it must never be a filter.
+
+    The detector can only observe what a posting *states*. Employers that
+    state a firm location and then hire the right candidate anyway are
+    textually identical to the ones that mean it, so the tiers exist to order
+    cards -- not to drop them.
+    """
+
+    def test_unstated_is_the_default(self):
+        """Silence is the common case and must not be read as a restriction."""
+        assert detect_hiring_reach("Remote", "Build great products.") == (
+            track_jobs.HIRING_REACH_UNSTATED
+        )
+
+    def test_eor_signal_is_open(self):
+        assert detect_hiring_reach("", "We hire via an employer of record.") == (
+            track_jobs.HIRING_REACH_OPEN
+        )
+
+    def test_stated_location_is_negotiable_not_blocked(self):
+        assert detect_hiring_reach("", "You must reside in the United States.") == (
+            track_jobs.HIRING_REACH_NEGOTIABLE
+        )
+
+    def test_clearance_is_blocked(self):
+        assert detect_hiring_reach("", "Requires an active security clearance.") == (
+            track_jobs.HIRING_REACH_BLOCKED
+        )
+
+    def test_visa_sponsorship_is_not_a_blocker(self):
+        """Sponsorship is about relocating onto the employer's soil. It says
+        nothing about employing someone where they already live, so it must
+        land in the negotiable tier, not the blocked one."""
+        for text in (
+            "We are unable to provide sponsorship for this role.",
+            "Applicants must be authorized to work in the United States.",
+            "This role is not eligible for visa sponsorship; candidates must"
+            " have work authorization.",
+        ):
+            assert detect_hiring_reach("", text) == (
+                track_jobs.HIRING_REACH_NEGOTIABLE
+            ), text
+
+    def test_blocked_beats_open(self):
+        """A legal bar can't be talked around, even by an EOR-friendly employer."""
+        text = "We use Deel for global payroll. Requires ITAR eligibility."
+        assert detect_hiring_reach("", text) == track_jobs.HIRING_REACH_BLOCKED
+
+    def test_open_beats_negotiable(self):
+        """Naming a cross-border mechanism outranks naming the obstacle."""
+        text = "You must be located in the EU. We hire via an employer of record."
+        assert detect_hiring_reach("", text) == track_jobs.HIRING_REACH_OPEN
+
+    def test_restriction_in_the_footer_is_found(self):
+        """Restriction language sits next to the EEO boilerplate at the end.
+
+        The work-mode and region checks scan only the first 500 characters;
+        this one must not, or it would miss the usual placement entirely.
+        """
+        text = ("We value curiosity. " * 200) + " Candidates must be located in Texas."
+        assert len(text) > 2000
+        assert detect_hiring_reach("", text) == track_jobs.HIRING_REACH_NEGOTIABLE
+
+    def test_word_boundary_matching(self):
+        """'itar' must not fire on 'guitarist'; 'legal entity' needs both words."""
+        assert detect_hiring_reach("", "Our guitarist plays on Fridays.") == (
+            track_jobs.HIRING_REACH_UNSTATED
+        )
+
+    def test_every_tier_is_ordered_and_reachable(self):
+        """Ordering must cover every tier the detector can return."""
+        tiers = {
+            track_jobs.HIRING_REACH_OPEN,
+            track_jobs.HIRING_REACH_NEGOTIABLE,
+            track_jobs.HIRING_REACH_UNSTATED,
+            track_jobs.HIRING_REACH_BLOCKED,
+        }
+        assert set(track_jobs.HIRING_REACH_ORDER) == tiers
+
+    def test_blocked_sorts_last_and_open_first(self):
+        order = track_jobs.HIRING_REACH_ORDER
+        assert order[track_jobs.HIRING_REACH_OPEN] < order[
+            track_jobs.HIRING_REACH_NEGOTIABLE
+        ] < order[track_jobs.HIRING_REACH_UNSTATED] < order[
+            track_jobs.HIRING_REACH_BLOCKED
+        ]
+
+
+class TestHiringReachIsNotAFilter:
+    """The whole point of shadow mode: detection must change no outcome.
+
+    Every prior filter added to this pipeline reduced it silently -- the
+    product-owner region filter took 99 postings to 1. This guards against
+    the reach tier ever becoming the next one.
+    """
+
+    @staticmethod
+    def _job(content):
+        return {
+            "id": "x1",
+            "source": "greenhouse",
+            "company": "Acme",
+            "title": "Staff Frontend Engineer",
+            "location": "Remote",
+            "workplace_type": "remote",
+            "content": content,
+            "url": "https://example.com/1",
+            "comp_data": None,
+        }
+
+    def test_blocked_posting_still_produces_a_match(self):
+        job = self._job("React and TypeScript. Requires a security clearance.")
+        match = track_jobs.process_job_posting(job)
+        assert match is not None
+        assert match["hiring_reach"] == track_jobs.HIRING_REACH_BLOCKED
+
+    def test_reach_does_not_affect_the_quality_score(self):
+        """Reach is orthogonal to fit; it must not leak into scoring."""
+        base = "React and TypeScript across the stack."
+        open_match = track_jobs.process_job_posting(
+            self._job(base + " We hire via an employer of record.")
+        )
+        blocked_match = track_jobs.process_job_posting(
+            self._job(base + " Requires a security clearance.")
+        )
+        assert open_match["quality_score"] == blocked_match["quality_score"]
+
+
+# =============================================================================
 # PROFILE-AWARE FILTERING TESTS
 # =============================================================================
 class TestProfileAwareRoleFiltering:
@@ -958,6 +1091,7 @@ class TestJobEmbed:
             "outreach_note": "Hi there",
             "source": "remoteok",
             "eor_detected": False,
+            "hiring_reach": "unstated",
         }
         match.update(overrides)
         return match
@@ -978,6 +1112,22 @@ class TestJobEmbed:
         for source, expected in SOURCE_ATTRIBUTION.items():
             embed = build_job_embed(self._match(source=source), "now")
             assert expected in embed["footer"]["text"]
+
+    def test_unstated_reach_renders_no_field(self):
+        """Silence is not a finding, so it must not be displayed as one."""
+        match = self._match(hiring_reach=track_jobs.HIRING_REACH_UNSTATED)
+        assert not any("Reach" in n for n in self._field_names(match))
+
+    def test_missing_reach_key_renders_no_field(self):
+        """Matches predating the field must still build an embed."""
+        match = self._match()
+        match.pop("hiring_reach", None)
+        assert not any("Reach" in n for n in self._field_names(match))
+
+    def test_each_badged_tier_renders_a_field(self):
+        for tier in track_jobs.HIRING_REACH_BADGES:
+            match = self._match(hiring_reach=tier)
+            assert any("Reach" in n for n in self._field_names(match)), tier
 
 
 

@@ -330,6 +330,48 @@ eor_signals:
     - workmotion
     - multiplier.com
 
+# Hiring reach (annotation only -- NEVER filters anything out).
+#
+# `hiring_blockers` is the legally immovable tier: a cleared or citizenship-
+# gated role will not open up for a strong candidate. Every entry must be
+# non-negotiable in fact, not merely firmly worded.
+hiring_blockers:
+    - security clearance
+    - active clearance
+    - ts/sci
+    - itar
+    - export control
+    - us citizens only
+    - u.s. citizens only
+    - must be a us citizen
+    - must be a u.s. citizen
+    - citizenship is required
+
+# `hiring_gatekeepers` is a stated location/payroll requirement, which is a
+# POSITIVE signal versus silence: the employer has thought about where it can
+# employ people, so there is a named obstacle to negotiate.
+#
+# Visa-sponsorship language belongs here, not in hiring_blockers. Sponsorship
+# is about relocating someone onto the employer's soil; it says nothing about
+# employing them where they already live, which is the thing being asked.
+hiring_gatekeepers:
+    - must reside in
+    - must live in
+    - must be located in
+    - must be based in
+    - must be physically located
+    - candidates must be located
+    - authorized to work in
+    - work authorization
+    - unable to provide sponsorship
+    - unable to sponsor
+    - do not provide sponsorship
+    - without sponsorship
+    - no visa sponsorship
+    - cannot hire outside
+    - do not have an entity
+    - legal entity
+
 # Accepted work modes: remote | hybrid | onsite | unknown.
 # Empty list disables work-mode filtering entirely.
 work_modes:
