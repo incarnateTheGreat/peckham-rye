@@ -15,7 +15,9 @@ from track_jobs import (
     DEFAULT_PROFILE,
     SOURCE_ATTRIBUTION,
     SOURCE_FETCHERS,
+    _score_badge,
     build_job_embed,
+    calculate_job_quality_components,
     calculate_job_quality_score,
     collect_matches,
     detect_work_mode,
@@ -1004,6 +1006,181 @@ class TestRegionWildcards:
 
     def test_empty_regions_accepts_anything(self):
         assert matches_region("Germany", "", DEFAULT_PROFILE) is True
+
+
+# =============================================================================
+# SCORE BADGE DISPLAY TESTS
+# =============================================================================
+class TestScoreBadge:
+    """Test quality score badge rendering with components and colored circles"""
+
+    def test_fallback_badge_without_components(self):
+        """Simple badge when components are None"""
+        result = _score_badge(75)
+        assert "✅" in result
+        assert "75/100" in result
+        assert "Strong match" in result
+        # Should be single line
+        assert "\n" not in result
+
+    def test_fallback_badge_excellent_score(self):
+        result = _score_badge(90)
+        assert "⭐" in result
+        assert "Excellent match" in result
+
+    def test_fallback_badge_moderate_score(self):
+        result = _score_badge(60)
+        assert "🔶" in result
+        assert "Moderate match" in result
+
+    def test_fallback_badge_low_score(self):
+        result = _score_badge(30)
+        assert "🔹" in result
+        assert "Low match" in result
+
+    def test_component_breakdown_with_perfect_score(self):
+        """All components at max should render correctly"""
+        components = {
+            "signal": 35,
+            "level": 30,
+            "salary": 20,
+            "role": 15,
+            "total": 100,
+        }
+        result = _score_badge(100, components)
+        lines = result.split("\n")
+        assert len(lines) == 6  # 4 components + separator + total
+        # Check all components have full bars
+        assert "████████████████████" in result  # 20 filled chars
+        # Check all components show green (strong)
+        assert result.count("🟢") == 4
+        assert "⭐" in result  # Excellent emoji
+        assert "100/100" in result
+
+    def test_component_breakdown_with_mixed_strengths(self):
+        """Components with varying strengths show correct color circles"""
+        components = {
+            "signal": 35,  # Strong (100%)
+            "level": 20,   # Yellow (67%)
+            "salary": 5,   # Red (25%)
+            "role": 15,    # Strong (100%)
+            "total": 75,
+        }
+        result = _score_badge(75, components)
+        # Check correct count of color circles
+        assert result.count("🟢") == 2  # Signal and Role strong
+        assert result.count("🟡") == 1  # Level moderate
+        assert result.count("🔴") == 1  # Salary weak
+        assert "✅" in result  # Strong Match overall
+
+    def test_bar_width_consistency(self):
+        """All Unicode bars should be exactly 20 characters wide"""
+        components = {
+            "signal": 35,
+            "level": 15,
+            "salary": 10,
+            "role": 7,
+            "total": 67,
+        }
+        result = _score_badge(67, components)
+        lines = result.split("\n")
+        # Extract lines with bars (first 4 lines)
+        for i in range(4):
+            line = lines[i]
+            # Find the bar portion (between first space run and the parenthesis)
+            bar_start = line.index("█") if "█" in line else line.index("░")
+            bar_end = bar_start + 20
+            bar = line[bar_start:bar_end]
+            # Bar should be exactly 20 chars of filled/empty
+            assert len(bar) == 20, f"Line {i} bar width != 20: {bar}"
+            assert all(c in "█░" for c in bar), f"Line {i} contains non-bar chars: {bar}"
+
+    def test_component_values_displayed(self):
+        """Component scores should be shown in parentheses"""
+        components = {
+            "signal": 25,
+            "level": 20,
+            "salary": 8,
+            "role": 12,
+            "total": 65,
+        }
+        result = _score_badge(65, components)
+        assert "(25)" in result  # Signal value
+        assert "(20)" in result  # Level value
+        assert "(8)" in result   # Salary value
+        assert "(12)" in result  # Role value
+
+    def test_score_totals_label(self):
+        """Bottom line should show score and quality label"""
+        components = {
+            "signal": 20,
+            "level": 0,
+            "salary": 5,
+            "role": 12,
+            "total": 37,
+        }
+        result = _score_badge(37, components)
+        assert "🔹 **37/100** — Low Match" in result
+
+    def test_zero_component_handling(self):
+        """Components with zero values should show empty bar and red circle"""
+        components = {
+            "signal": 0,
+            "level": 0,
+            "salary": 0,
+            "role": 0,
+            "total": 0,
+        }
+        result = _score_badge(0, components)
+        # All should be red (weak)
+        assert result.count("🔴") == 4
+        # All bars should be empty
+        assert "░░░░░░░░░░░░░░░░░░░░" in result
+
+    def test_single_strong_component(self):
+        """When only one component is strong, others should be red"""
+        components = {
+            "signal": 35,  # Strong
+            "level": 0,    # Weak
+            "salary": 0,   # Weak
+            "role": 0,     # Weak
+            "total": 35,
+        }
+        result = _score_badge(35, components)
+        assert "🟢" in result  # Signal is green
+        assert result.count("🔴") == 3  # Level, Salary, Role are red
+
+    def test_strength_emoji_boundaries(self):
+        """Test emoji selection at boundary percentages"""
+        # 70% boundary: signal max is 35, so 70% = 24.5
+        components_strong = {
+            "signal": 25,  # 71% -> green
+            "level": 0,
+            "salary": 0,
+            "role": 0,
+            "total": 25,
+        }
+        assert "🟢" in _score_badge(25, components_strong)
+
+        # 30% boundary: salary max is 20, so 30% = 6
+        components_boundary = {
+            "signal": 0,
+            "level": 0,
+            "salary": 6,  # 30% -> yellow
+            "role": 0,
+            "total": 6,
+        }
+        assert "🟡" in _score_badge(6, components_boundary)
+
+        components_weak = {
+            "signal": 0,
+            "level": 0,
+            "salary": 5,  # 25% -> red
+            "role": 0,
+            "total": 5,
+        }
+        result = _score_badge(5, components_weak)
+        assert "🔴" in result
 
 
 if __name__ == "__main__":
