@@ -897,6 +897,18 @@ def _score_badge(score: int, components: dict[str, int] | None = None) -> str:
     empty = bar_width - filled
     return f"{'█' * filled}{'░' * empty}"
 
+  def strength_emoji(value: int, max_pts: int) -> str:
+    """Return colored circle emoji based on component strength."""
+    if max_pts == 0:
+      return "⚪"
+    pct = value / max_pts
+    if pct >= 0.70:
+      return "🟢"  # Strong (≥70%)
+    elif pct >= 0.30:
+      return "🟡"  # Moderate (≥30%)
+    else:
+      return "🔴"  # Weak (<30%)
+
   # Determine overall quality label and emoji
   total = components["total"]
   if total >= 85:
@@ -914,10 +926,10 @@ def _score_badge(score: int, components: dict[str, int] | None = None) -> str:
 
   # Build the detailed breakdown
   lines = [
-      f"Signal:  {make_bar(components['signal'], 35)} ({components['signal']})",
-      f"Level:   {make_bar(components['level'], 30)} ({components['level']})",
-      f"Salary:  {make_bar(components['salary'], 20)} ({components['salary']})",
-      f"Role:    {make_bar(components['role'], 15)} ({components['role']})",
+      f"{strength_emoji(components['signal'], 35)} Signal:  {make_bar(components['signal'], 35)} ({components['signal']})",
+      f"{strength_emoji(components['level'], 30)} Level:   {make_bar(components['level'], 30)} ({components['level']})",
+      f"{strength_emoji(components['salary'], 20)} Salary:  {make_bar(components['salary'], 20)} ({components['salary']})",
+      f"{strength_emoji(components['role'], 15)} Role:    {make_bar(components['role'], 15)} ({components['role']})",
       "─" * 40,
       f"{emoji} **{total}/100** — {label}",
   ]
