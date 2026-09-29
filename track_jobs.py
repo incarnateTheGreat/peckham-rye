@@ -186,7 +186,7 @@ class SearchProfile:
               # Dev tools / product engineering
               "replit", "posthog", "clickup", "sanity", "fullstory",
               "helpscout", "gorgias", "dovetail", "mazedesign", "nylas",
-              "substack", "patreon",
+              "substack", "patreon", "amplitude",
               # Fintech
               "moderntreasury", "column", "persona", "middesk", "headway",
           ],
@@ -215,7 +215,7 @@ class SearchProfile:
               "asana", "smartsheet", "calendly", "typeform", "contentful",
               "storyblok", "algolia", "fastly", "chainguard", "jfrog",
               "circleci", "buildkite", "honeycomb", "newrelic",
-              "launchdarkly", "amplitude", "mixpanel", "braze",
+              "launchdarkly", "mixpanel", "braze",
               "customerio", "klaviyo", "iterable", "intercom",
               # Fintech
               "block", "wise", "monzo", "n26", "adyen", "lithic", "alloy",

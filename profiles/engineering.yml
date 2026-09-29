@@ -80,6 +80,7 @@ boards:
         - nylas
         - substack
         - patreon
+        - amplitude # Ashby, not Greenhouse -- the Greenhouse board 404s
         # Fintech
         - moderntreasury
         - column
@@ -163,7 +164,6 @@ boards:
         - honeycomb
         - newrelic
         - launchdarkly
-        - amplitude
         - mixpanel
         - braze
         - customerio
