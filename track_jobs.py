@@ -253,6 +253,14 @@ class SearchProfile:
       ]
   )
 
+  # How many DISTINCT `require_in_description` terms a generic-title posting
+  # must hit before it qualifies. 1 reproduces the original any() behaviour,
+  # so profiles that don't set it are unaffected. Raise it when a broad
+  # `generic_title_fallbacks` entry is letting adjacent roles through: a
+  # recruiter or legal-counsel posting for a product team mentions "roadmap"
+  # once, whereas a real product posting also names discovery or backlog.
+  require_in_description_min: int = 1
+
   # Titles rejected outright. Checked before any include rule, so keep these
   # phrase-level ("platform engineer", not "platform") to avoid collisions.
   exclude_title_exact: list[str] = field(
@@ -578,6 +586,19 @@ def save_seen_jobs(seen_jobs: set[str], profile_name: str):
 # =============================================================================
 # FILTERING HELPER FUNCTIONS
 # =============================================================================
+def _phrase_in(text: str, phrases: list[str]) -> bool:
+  """True when any phrase occurs in `text` on word boundaries.
+
+  Include rules used to be plain substring tests while exclusions were
+  word-boundary matched. That asymmetry let the generic fallback `product`
+  match "Productivity", so "Senior Enterprise Systems Engineer, AI
+  Productivity" was carded as a product role. Both sides now agree.
+  """
+  return any(
+      re.search(r"\b" + re.escape(p.lower()) + r"\b", text) for p in phrases
+  )
+
+
 def is_target_role(
     title: str,
     description: str = "",
@@ -589,23 +610,27 @@ def is_target_role(
 
   # Exclusions are checked first and always beat inclusions. Word-boundary
   # matched so short entries like "vp" cannot match inside another word.
-  if any(
-      re.search(r"\b" + re.escape(bad) + r"\b", t)
-      for bad in profile.exclude_title_exact
-  ):
+  if _phrase_in(t, profile.exclude_title_exact):
     return False
 
   # Either keyword tier qualifies the posting; the tiers only affect scoring.
   # Automatically handles "Staff Frontend Engineer", "Product Engineer", etc.
-  if any(
-      k in t
-      for k in (*profile.primary_role_keywords, *profile.secondary_role_keywords)
+  if _phrase_in(
+      t, [*profile.primary_role_keywords, *profile.secondary_role_keywords]
   ):
     return True
 
-  # Fallback: generic titles accepted ONLY if the description carries the signal
-  if any(generic in t for generic in profile.generic_title_fallbacks):
-    return any(keyword in d for keyword in profile.require_in_description)
+  # Fallback: generic titles accepted only when the description carries enough
+  # responsibility signal. Counted rather than any()-ed, because one passing
+  # mention of a term like "roadmap" appears in postings for adjacent roles
+  # (recruiting for a product team, counsel supporting product) that are not
+  # the job itself.
+  if _phrase_in(t, profile.generic_title_fallbacks):
+    hits = sum(
+        1 for keyword in profile.require_in_description
+        if re.search(r"\b" + re.escape(keyword.lower()) + r"\b", d)
+    )
+    return hits >= profile.require_in_description_min
 
   return False
 
@@ -903,9 +928,9 @@ def calculate_job_quality_score(
   score += SALARY_STATUS_POINTS.get(salary_status, 0)
 
   # 4. Role Focus (15 points max)
-  if any(role in title_lower for role in profile.primary_role_keywords):
+  if _phrase_in(title_lower, profile.primary_role_keywords):
     score += 15
-  elif any(role in title_lower for role in profile.secondary_role_keywords):
+  elif _phrase_in(title_lower, profile.secondary_role_keywords):
     score += 12
 
   return min(100, score)
@@ -947,9 +972,9 @@ def calculate_job_quality_components(
   components["salary"] = SALARY_STATUS_POINTS.get(salary_status, 0)
 
   # 4. Role Focus (15 points max)
-  if any(role in title_lower for role in profile.primary_role_keywords):
+  if _phrase_in(title_lower, profile.primary_role_keywords):
     components["role"] = 15
-  elif any(role in title_lower for role in profile.secondary_role_keywords):
+  elif _phrase_in(title_lower, profile.secondary_role_keywords):
     components["role"] = 12
 
   components["total"] = min(100, sum([components[k] for k in ["signal", "level", "salary", "role"]]))

@@ -737,8 +737,43 @@ class TestProfileAwareRoleFiltering:
 
     def test_generic_product_title_requires_description(self):
         p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
-        assert is_target_role("Product Strategist", "Own the roadmap", p) is True
+        assert is_target_role(
+            "Product Strategist", "Own the roadmap and run discovery", p
+        ) is True
         assert is_target_role("Product Strategist", "Manage our retail floor", p) is False
+
+    def test_generic_title_needs_more_than_one_description_signal(self):
+        """One passing mention is what let adjacent roles through.
+
+        A recruiter or counsel posting supporting a product team says
+        "roadmap" once and nothing else; a real product posting names
+        discovery, backlog or prioritization as well.
+        """
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert p.require_in_description_min == 2
+        assert is_target_role("Product Strategist", "Own the roadmap", p) is False
+
+    def test_generic_fallback_is_word_boundary_matched(self):
+        """'product' must not match inside 'Productivity'.
+
+        This carded "Senior Enterprise Systems Engineer, AI Productivity" as a
+        product role, because include rules were substring-matched while
+        exclusions were word-boundary matched.
+        """
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        rich = "Own the roadmap, run discovery and groom the backlog"
+        assert is_target_role(
+            "Senior Enterprise Systems Engineer, AI Productivity", rich, p
+        ) is False
+        assert is_target_role("Product Strategist", rich, p) is True
+
+    def test_svp_is_excluded(self):
+        """'\\bvp\\b' cannot match 'SVP' -- s and v are both word chars."""
+        p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
+        assert is_target_role(
+            "SVP, Product Management - Data Products & Strategy", "", p
+        ) is False
+        assert is_target_role("Chief Product Officer", "", p) is False
 
 
 class TestRoleFocusScoring:

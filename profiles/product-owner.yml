@@ -111,6 +111,7 @@ secondary_role_keywords:
 
 # "B2B SaaS Product Manager" and similar rarely appear verbatim in titles, so
 # a bare "product" title is accepted when the description carries the signal.
+# Matched on word boundaries, so this no longer fires on "Productivity".
 generic_title_fallbacks:
     - product
 require_in_description:
@@ -118,7 +119,15 @@ require_in_description:
     - roadmap
     - backlog
     - discovery
+    - prioritization
+    - user research
+    - product requirements
     - stakeholder
+
+# Two DISTINCT signals, not one. A recruiter, counsel or security posting that
+# supports a product team mentions "roadmap" or "stakeholder" in passing; an
+# actual product posting also names discovery, backlog or prioritization.
+require_in_description_min: 2
 
 # Word-boundary matched, so "lead" will not match "leadership". Deliberately
 # excludes no form of "technical", "platform" or "developer" — all three
@@ -129,6 +138,11 @@ exclude_title_exact:
     - intern
     - director
     - vp
+    # "\bvp\b" cannot match "SVP" -- s and v are both word characters, so
+    # there is no boundary between them. Needs its own entry.
+    - svp
+    - cpo
+    - chief product officer
     - vice president
     - head of product
     - commission
