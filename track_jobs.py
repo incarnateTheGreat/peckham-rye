@@ -57,6 +57,43 @@ SOURCE_ATTRIBUTION = {
 }
 SALARY_STATUS_POINTS = {"VERIFIED": 20, "UNLISTED": 5, "HOURLY": 5}
 
+# Quality-score buckets and their default point allocations. A profile can
+# redraw these via `score_weights`; every bucket computes a 0-100 fraction
+# internally and is then scaled to its weight, so the weights are the single
+# place that decides what a profile cares about.
+#
+# Setting a weight to 0 removes the bucket from both the score and the card.
+# `location` and `tools` default to 0 so this is inert for existing profiles.
+DEFAULT_SCORE_WEIGHTS = {
+    "signal": 35,
+    "level": 30,
+    "salary": 20,
+    "role": 15,
+    "location": 0,
+    "tools": 0,
+}
+
+# Raw scale each bucket reports on before it is scaled to its weight. Kept
+# equal to the historical point values so the default weights reproduce the
+# original scores exactly, including the integer rounding.
+SCORE_BUCKET_RAW_MAX = {
+    "signal": 35,
+    "level": 30,
+    "salary": 20,
+    "role": 15,
+    "location": 100,
+    "tools": 100,
+}
+
+SCORE_BUCKET_LABELS = {
+    "signal": "Signal",
+    "level": "Level",
+    "salary": "Salary",
+    "role": "Role",
+    "location": "Location",
+    "tools": "Tools",
+}
+
 # Hiring reach: how reachable a posting is for a candidate outside the
 # employer's home geography. Deliberately NOT a filter -- a posting can state
 # a hard requirement and still flex for the right candidate, and nothing in
@@ -301,6 +338,19 @@ class SearchProfile:
       ]
   )
 
+  # Tooling worth a small nudge but never a requirement. Scored in its own
+  # bucket so it cannot crowd out domain signals the way it would if it shared
+  # the `good_signals` cap. Empty by default; `tools` weight is 0 unless a
+  # profile asks for it.
+  tool_signals: list[str] = field(default_factory=list)
+
+  # Point allocation per scoring bucket. Missing keys fall back to
+  # DEFAULT_SCORE_WEIGHTS. Weights need not sum to 100 -- the total is capped
+  # at 100 either way -- but making them sum to 100 keeps the card readable.
+  score_weights: dict[str, int] = field(
+      default_factory=lambda: dict(DEFAULT_SCORE_WEIGHTS)
+  )
+
   # Signals surfaced on the Discord card.
   key_signal_terms: list[str] = field(
       default_factory=lambda: [
@@ -419,6 +469,12 @@ class SearchProfile:
           "worldwide", "anywhere", "global", "international", "remote",
       ]
   )
+
+  # Geographies that rule the candidate out. Used ONLY by the location score,
+  # never as a filter, and matched against the title and location string --
+  # never the description, where country names appear in EEO boilerplate and
+  # office lists. Empty by default, so this is inert for existing profiles.
+  region_exclusions: list[str] = field(default_factory=list)
 
   # Off by default: EOR support is rarely stated even when it exists, so
   # requiring it drops good postings rather than filtering bad ones. Detection
@@ -884,56 +940,74 @@ def extract_key_signals(
   return ", ".join(found) if found else profile.key_signal_fallback
 
 
-def calculate_job_quality_score(
+def score_location_fit(
     title: str,
-    content: str,
-    salary_status: str,
+    location: str,
+    description: str = "",
     profile: SearchProfile = DEFAULT_PROFILE,
+    reach: str | None = None,
 ) -> int:
+  """Rate how employable the candidate is for this posting, 0-100.
+
+  Deliberately reads the TITLE and LOCATION only, never the description.
+  Country names are scattered through EEO boilerplate and office lists, so a
+  full-text scan would flag almost every posting; the same reasoning already
+  keeps broad terms out of `eor_signals`. The evidence is in the short fields
+  anyway -- "Remote, USA" in the location, "Createspace, USA Based" in the
+  title.
+
+  `detect_hiring_reach` is the one full-text input, and only via its verdict.
+  Callers that already have it should pass it in: it is the most expensive
+  scan in the pipeline and `process_job_posting` needs it regardless.
   """
-  Calculate comprehensive job quality score (0-100).
+  if reach is None:
+    reach = detect_hiring_reach(location, description, profile)
+  if reach == HIRING_REACH_BLOCKED:
+    return 0
 
-  Factors:
-  - Signal match (35%): profile.premium_signals / profile.good_signals
-  - Level match (30%): profile.high_level_keywords
-  - Salary fit (20%): verified salary above target
-  - Role focus (15%): profile.primary_role_keywords / secondary_role_keywords
+  hay = f"{title or ''} {location or ''}".lower()
+  names_region = bool(profile.regions) and _phrase_in(hay, profile.regions)
+  names_excluded = _phrase_in(hay, profile.region_exclusions)
+
+  # Both named means a genuinely multi-country posting ("Canada, Remote" on a
+  # role titled "USA Based"). Reachable, but not on the candidate's terms.
+  if names_region and names_excluded:
+    return 50
+  if names_region:
+    return 100
+  if names_excluded:
+    return 0
+
+  if reach == HIRING_REACH_OPEN:
+    return 100
+  if reach == HIRING_REACH_NEGOTIABLE:
+    return 20
+
+  # Nothing stated either way. The common case, and not evidence of a problem.
+  return 60
+
+
+def _scale_to_weight(raw: int, bucket: str, weights: dict[str, int]) -> int:
+  """Scale a bucket's raw 0-`raw_max` value onto its configured weight.
+
+  Integer arithmetic throughout: at the default weights `raw * 35 // 35`
+  returns `raw` unchanged, so existing profiles keep bit-identical scores.
+  Float fractions drift by a point at the boundaries.
   """
-  score = 0
+  weight = weights.get(bucket, DEFAULT_SCORE_WEIGHTS.get(bucket, 0))
+  if weight <= 0:
+    return 0
+  raw_max = SCORE_BUCKET_RAW_MAX[bucket]
+  return min(weight, (raw * weight) // raw_max)
 
-  # 1. Signal Match (35 points max). Scanned over the whole description, the
-  # same text extract_key_signals sees. A truncated window made the two
-  # disagree, so a card could list four signals and still score them as zero.
-  content_lower = content.lower()
-  title_lower = title.lower()
-  combined_text = f"{title_lower} {content_lower}"
 
-  premium_matches = sum(
-      1 for term in profile.premium_signals
-      if re.search(r"\b" + re.escape(term.lower()) + r"\b", combined_text)
-  )
-  good_matches = sum(
-      1 for term in profile.good_signals
-      if re.search(r"\b" + re.escape(term.lower()) + r"\b", combined_text)
-  )
-
-  score += min(35, (premium_matches * 7) + (good_matches * 3))
-
-  # 2. Level Match (30 points max)
-  if any(level in title_lower for level in profile.high_level_keywords):
-    score += 30
-
-  # 3. Salary Fit (20 points max). An hourly rate scores the same as an
-  # unlisted one: present but not verified against an annual target.
-  score += SALARY_STATUS_POINTS.get(salary_status, 0)
-
-  # 4. Role Focus (15 points max)
+def _role_focus_raw(title_lower: str, profile: SearchProfile) -> int:
+  """Role-focus points before weighting: primary 15, secondary 12, else 0."""
   if _phrase_in(title_lower, profile.primary_role_keywords):
-    score += 15
-  elif _phrase_in(title_lower, profile.secondary_role_keywords):
-    score += 12
-
-  return min(100, score)
+    return 15
+  if _phrase_in(title_lower, profile.secondary_role_keywords):
+    return 12
+  return 0
 
 
 def calculate_job_quality_components(
@@ -941,44 +1015,73 @@ def calculate_job_quality_components(
     content: str,
     salary_status: str,
     profile: SearchProfile = DEFAULT_PROFILE,
+    location: str = "",
+    reach: str | None = None,
 ) -> dict[str, int]:
-  """
-  Calculate job quality score components (signal, level, salary, role).
-  Returns a dict with individual scores and total.
-  """
-  components = {"signal": 0, "level": 0, "salary": 0, "role": 0}
+  """Score a posting bucket by bucket, scaled to the profile's weights.
 
-  # 1. Signal Match (35 points max)
+  Every bucket is computed on its own raw scale and then scaled by
+  `profile.score_weights`, so a profile changes what matters by redrawing the
+  weights rather than by editing this function. Buckets weighted 0 are absent
+  from the result and from the card.
+  """
+  weights = profile.score_weights
   content_lower = content.lower()
   title_lower = title.lower()
   combined_text = f"{title_lower} {content_lower}"
 
-  premium_matches = sum(
-      1 for term in profile.premium_signals
-      if re.search(r"\b" + re.escape(term.lower()) + r"\b", combined_text)
-  )
-  good_matches = sum(
-      1 for term in profile.good_signals
-      if re.search(r"\b" + re.escape(term.lower()) + r"\b", combined_text)
-  )
+  def _hits(terms: list[str]) -> int:
+    return sum(
+        1 for term in terms
+        if re.search(r"\b" + re.escape(term.lower()) + r"\b", combined_text)
+    )
 
-  components["signal"] = min(35, (premium_matches * 7) + (good_matches * 3))
+  # 1. Signal match. Scanned over the whole description, the same text
+  # extract_key_signals sees. A truncated window made the two disagree, so a
+  # card could list four signals and still score them as zero.
+  raw = {
+      "signal": min(35, (_hits(profile.premium_signals) * 7)
+                    + (_hits(profile.good_signals) * 3)),
+      # 2. Level match: binary on the title.
+      "level": 30 if any(
+          level in title_lower for level in profile.high_level_keywords
+      ) else 0,
+      # 3. Salary fit. An hourly rate scores the same as an unlisted one:
+      # present, but not verified against an annual target.
+      "salary": SALARY_STATUS_POINTS.get(salary_status, 0),
+      # 4. Role focus.
+      "role": _role_focus_raw(title_lower, profile),
+      # 5. Location / work-authorization fit.
+      "location": score_location_fit(title, location, content, profile, reach),
+      # 6. Tooling. A small nudge, never a requirement, so a posting that
+      # names none of them is not penalised beyond forgoing the bucket.
+      # Scored against a handful of hits rather than the whole list: the
+      # bucket is only worth a few points, so dividing by a long list rounds
+      # every realistic posting down to zero.
+      "tools": min(100, _hits(profile.tool_signals) * 25),
+  }
 
-  # 2. Level Match (30 points max)
-  if any(level in title_lower for level in profile.high_level_keywords):
-    components["level"] = 30
-
-  # 3. Salary Fit (20 points max)
-  components["salary"] = SALARY_STATUS_POINTS.get(salary_status, 0)
-
-  # 4. Role Focus (15 points max)
-  if _phrase_in(title_lower, profile.primary_role_keywords):
-    components["role"] = 15
-  elif _phrase_in(title_lower, profile.secondary_role_keywords):
-    components["role"] = 12
-
-  components["total"] = min(100, sum([components[k] for k in ["signal", "level", "salary", "role"]]))
+  components = {
+      bucket: _scale_to_weight(value, bucket, weights)
+      for bucket, value in raw.items()
+      if weights.get(bucket, DEFAULT_SCORE_WEIGHTS.get(bucket, 0)) > 0
+  }
+  components["total"] = min(100, sum(components.values()))
   return components
+
+
+def calculate_job_quality_score(
+    title: str,
+    content: str,
+    salary_status: str,
+    profile: SearchProfile = DEFAULT_PROFILE,
+    location: str = "",
+    reach: str | None = None,
+) -> int:
+  """Total quality score, 0-100. See calculate_job_quality_components."""
+  return calculate_job_quality_components(
+      title, content, salary_status, profile, location, reach
+  )["total"]
 
 
 # =============================================================================
@@ -1014,61 +1117,80 @@ def _salary_badge(match: dict) -> tuple[str, int]:
   return f"🔴 **{match['salary_text']}** (Below target)", 0xE74C3C
 
 
-def _score_badge(score: int, components: dict[str, int] | None = None) -> str:
-  """Build score display. If components provided, show detailed breakdown with bars."""
-  if components is None:
-    # Fallback for when components aren't available
-    if score >= 85:
-      return f"⭐ {score}/100 (Excellent match)"
-    if score >= 70:
-      return f"✅ {score}/100 (Strong match)"
-    if score >= 50:
-      return f"🔶 {score}/100 (Moderate match)"
-    return f"🔹 {score}/100 (Low match)"
+SCORE_BAR_WIDTH = 20
 
-  # Build component breakdown with aligned bars (20 chars wide)
-  bar_width = 20
-  def make_bar(value: int, max_pts: int) -> str:
-    filled = int((value / max_pts) * bar_width) if max_pts > 0 else 0
-    empty = bar_width - filled
-    return f"{'█' * filled}{'░' * empty}"
 
-  def strength_emoji(value: int, max_pts: int) -> str:
-    """Return colored circle emoji based on component strength."""
-    if max_pts == 0:
-      return "⚪"
-    pct = value / max_pts
-    if pct >= 0.70:
-      return "🟢"  # Strong (≥70%)
-    elif pct >= 0.30:
-      return "🟡"  # Moderate (≥30%)
-    else:
-      return "🔴"  # Weak (<30%)
+def _score_bar(value: int, max_pts: int) -> str:
+  """Fixed-width Unicode meter for one bucket."""
+  filled = int((value / max_pts) * SCORE_BAR_WIDTH) if max_pts > 0 else 0
+  return f"{'█' * filled}{'░' * (SCORE_BAR_WIDTH - filled)}"
 
-  # Determine overall quality label and emoji
-  total = components["total"]
+
+def _score_strength_emoji(value: int, max_pts: int) -> str:
+  """Coloured circle reflecting how much of a bucket the posting earned."""
+  if max_pts == 0:
+    return "⚪"
+  pct = value / max_pts
+  if pct >= 0.70:
+    return "🟢"
+  if pct >= 0.30:
+    return "🟡"
+  return "🔴"
+
+
+def _score_verdict(total: int) -> tuple[str, str]:
+  """Overall emoji and label for a total score."""
   if total >= 85:
-    emoji = "⭐"
-    label = "Excellent Match"
-  elif total >= 70:
-    emoji = "✅"
-    label = "Strong Match"
-  elif total >= 50:
-    emoji = "🔶"
-    label = "Moderate Match"
-  else:
-    emoji = "🔹"
-    label = "Low Match"
+    return "⭐", "Excellent Match"
+  if total >= 70:
+    return "✅", "Strong Match"
+  if total >= 50:
+    return "🔶", "Moderate Match"
+  return "🔹", "Low Match"
 
-  # Build the detailed breakdown
-  lines = [
-      f"{strength_emoji(components['signal'], 35)} Signal:  {make_bar(components['signal'], 35)} ({components['signal']})",
-      f"{strength_emoji(components['level'], 30)} Level:   {make_bar(components['level'], 30)} ({components['level']})",
-      f"{strength_emoji(components['salary'], 20)} Salary:  {make_bar(components['salary'], 20)} ({components['salary']})",
-      f"{strength_emoji(components['role'], 15)} Role:    {make_bar(components['role'], 15)} ({components['role']})",
-      "─" * 40,
-      f"{emoji} **{total}/100** — {label}",
-  ]
+
+def _score_breakdown_lines(
+    components: dict[str, int],
+    weights: dict[str, int],
+) -> list[str]:
+  """One bar per weighted bucket, in the order the weights declare them.
+
+  Iterating the weights means a profile that redraws its buckets gets a card
+  matching its own scoring, and a bucket weighted 0 renders nothing at all.
+  """
+  lines = []
+  for bucket, max_pts in weights.items():
+    if max_pts <= 0 or bucket not in components:
+      continue
+    value = components[bucket]
+    label = f"{SCORE_BUCKET_LABELS.get(bucket, bucket.title())}:"
+    lines.append(
+        f"{_score_strength_emoji(value, max_pts)} {label:<9}"
+        f" {_score_bar(value, max_pts)} ({value})"
+    )
+  return lines
+
+
+def _score_badge(
+    score: int,
+    components: dict[str, int] | None = None,
+    weights: dict[str, int] | None = None,
+) -> str:
+  """Build score display. If components provided, show detailed breakdown with bars.
+
+  `weights` supplies each bucket's maximum. It defaults to
+  DEFAULT_SCORE_WEIGHTS, so a caller holding a plain four-bucket component
+  dict renders exactly as before.
+  """
+  if components is None:
+    emoji, label_text = _score_verdict(score)
+    return f"{emoji} {score}/100 ({label_text.replace('Match', 'match')})"
+
+  total = components["total"]
+  emoji, label_text = _score_verdict(total)
+  lines = _score_breakdown_lines(components, weights or DEFAULT_SCORE_WEIGHTS)
+  lines.append("─" * 40)
+  lines.append(f"{emoji} **{total}/100** — {label_text}")
   return "\n".join(lines)
 
 
@@ -1081,7 +1203,12 @@ def build_job_embed(
 
   location_value = f"{match['location']} — {match['work_mode'].title()}"
   fields = [
-      {"name": "📊 Quality Breakdown", "value": _score_badge(match["quality_score"], match.get("score_components")),
+      {"name": "📊 Quality Breakdown",
+       "value": _score_badge(
+           match["quality_score"],
+           match.get("score_components"),
+           match.get("score_weights"),
+       ),
        "inline": False},
       {"name": "💰 Compensation", "value": salary_badge, "inline": True},
       {"name": "📍 Location & Work Type", "value": location_value,
@@ -1220,7 +1347,7 @@ def process_job_posting(
 
   key_tech = extract_key_signals(content, profile)
   score_components = calculate_job_quality_components(
-      title, content, salary_status, profile
+      title, content, salary_status, profile, location, hiring_reach
   )
   quality_score = score_components["total"]
   recruiter_url = (
@@ -1246,6 +1373,7 @@ def process_job_posting(
       "key_tech": key_tech,
       "quality_score": quality_score,
       "score_components": score_components,
+      "score_weights": profile.score_weights,
       "recruiter_url": recruiter_url,
       "outreach_note": outreach_note,
   }

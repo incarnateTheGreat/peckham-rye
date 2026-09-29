@@ -13,9 +13,11 @@ from pathlib import Path
 import pytest
 from track_jobs import (
     DEFAULT_PROFILE,
+    DEFAULT_SCORE_WEIGHTS,
     SOURCE_ATTRIBUTION,
     SOURCE_FETCHERS,
     _score_badge,
+    _scale_to_weight,
     build_job_embed,
     calculate_job_quality_components,
     calculate_job_quality_score,
@@ -31,6 +33,7 @@ from track_jobs import (
     matches_region,
     matches_work_mode,
     parse_salary_info,
+    score_location_fit,
 )
 import check_boards
 import track_jobs
@@ -1366,6 +1369,169 @@ class TestScoreBadge:
         }
         result = _score_badge(5, components_weak)
         assert "🔴" in result
+
+
+# =============================================================================
+# WEIGHTED SCORING & LOCATION FIT
+# =============================================================================
+class TestWeightedScoring:
+    """The scoring buckets are profile-configurable, not hardcoded."""
+
+    def _pm(self):
+        return load_profile(str(PROFILES_DIR / "product-owner.yml"))
+
+    def test_default_weights_reproduce_legacy_scores(self):
+        """The rework must be a no-op for any profile that keeps the defaults.
+
+        Integer scaling is load-bearing here: `raw * 35 // 35` returns raw
+        unchanged, where a float fraction drifts a point at the boundaries.
+        """
+        score = calculate_job_quality_score(
+            "Staff React TypeScript Engineer",
+            "React, TypeScript, Next.js, GraphQL, PostgreSQL",
+            "VERIFIED",
+        )
+        assert score == 93
+
+    def test_zero_weighted_bucket_is_absent_entirely(self):
+        """product-owner sets salary to 0, so it must not score or render."""
+        p = self._pm()
+        assert p.score_weights["salary"] == 0
+        components = calculate_job_quality_components(
+            "Senior Product Manager", "Own the roadmap", "VERIFIED", p
+        )
+        assert "salary" not in components
+        assert "salary" not in _score_badge(
+            components["total"], components, p.score_weights
+        ).lower()
+
+    def test_role_bucket_scales_to_its_weight(self):
+        """Role is weighted 30 for this profile, so primary must score 30."""
+        p = self._pm()
+        primary = calculate_job_quality_components(
+            "Product Manager", "", "UNLISTED", p
+        )
+        secondary = calculate_job_quality_components(
+            "Product Lead", "", "UNLISTED", p
+        )
+        assert primary["role"] == 30
+        assert secondary["role"] == 24  # 12/15 of 30
+
+    def test_weights_sum_to_one_hundred(self):
+        p = self._pm()
+        assert sum(p.score_weights.values()) == 100
+
+    def test_scaling_is_integer_arithmetic(self):
+        """`(raw * weight) // raw_max`, never `int(raw / raw_max * weight)`.
+
+        Float scaling drifts a point low on nine reachable triples. This is
+        one of them, and `location` really does use raw_max=100, so a profile
+        weighting it 50 would hit it.
+        """
+        weights = {"location": 50}
+        assert _scale_to_weight(58, "location", weights) == 29
+        assert int(58 / 100 * 50) == 28  # what the float version would give
+
+    def test_unknown_bucket_weight_falls_back_to_default(self):
+        """A profile may name only the buckets it wants to change."""
+        assert _scale_to_weight(35, "signal", {}) == DEFAULT_SCORE_WEIGHTS["signal"]
+
+    def test_tools_cannot_outweigh_domain_signals(self):
+        """The whole point of splitting tools out of good_signals.
+
+        A posting naming every tool and no domain term must score below one
+        naming two domain terms and no tool.
+        """
+        p = self._pm()
+        tools_only = calculate_job_quality_components(
+            "Product Manager",
+            "We use Jira, Confluence, Pendo, Figma, SQL, AWS and GitHub.",
+            "UNLISTED", p,
+        )
+        domain_only = calculate_job_quality_components(
+            "Product Manager",
+            "Enterprise SaaS product strategy with roadmap ownership.",
+            "UNLISTED", p,
+        )
+        assert tools_only["tools"] > 0
+        assert domain_only["signal"] > tools_only["signal"]
+        assert domain_only["total"] > tools_only["total"]
+
+    def test_a_couple_of_tools_still_register(self):
+        """Dividing by the whole tool list rounded every real posting to 0.
+
+        A posting naming two tools out of eleven is a normal posting, not a
+        posting with no tooling signal.
+        """
+        p = self._pm()
+        components = calculate_job_quality_components(
+            "Senior Product Manager",
+            "Own the roadmap. We use Jira and Pendo.",
+            "UNLISTED", p,
+        )
+        assert components["tools"] == 2
+
+
+class TestLocationFit:
+    """Canada eligibility is a scoring factor, not a silent pass."""
+
+    def _pm(self):
+        return load_profile(str(PROFILES_DIR / "product-owner.yml"))
+
+    def test_us_only_remote_scores_zero(self):
+        """The exact failure that put 'Remote, USA' at the top of the board.
+
+        matches_region passes it because 'remote' is a region wildcard, so
+        the score is the only place this can be expressed.
+        """
+        p = self._pm()
+        assert score_location_fit("Product Manager", "Remote, USA", "", p) == 0
+        assert matches_region("Remote, USA", "", p) is True
+
+    def test_canadian_location_scores_full(self):
+        p = self._pm()
+        assert score_location_fit("Product Manager", "Toronto, Canada", "", p) == 100
+
+    def test_country_in_title_is_caught(self):
+        """D2L's 'Senior PM - Createspace, USA Based' is located 'Canada,
+        Remote'. Naming both is a real multi-country posting, not a full match.
+        """
+        p = self._pm()
+        both = score_location_fit(
+            "Senior Product Manager - Createspace, USA Based", "Canada, Remote", "", p
+        )
+        assert both == 50
+
+    def test_unstated_location_is_not_penalised(self):
+        """Silence is the common case and is not evidence of a problem."""
+        p = self._pm()
+        assert score_location_fit("Product Manager", "Remote", "", p) == 60
+
+    def test_blocked_reach_scores_zero(self):
+        p = self._pm()
+        assert score_location_fit(
+            "Product Manager", "Toronto, Canada",
+            "Requires an active security clearance.", p,
+        ) == 0
+
+    def test_description_country_names_are_ignored(self):
+        """Full-text scanning would flag nearly every posting via boilerplate."""
+        p = self._pm()
+        boilerplate = (
+            "We are an equal opportunity employer. Our offices span the "
+            "United States, the United Kingdom and India."
+        )
+        assert score_location_fit(
+            "Product Manager", "Toronto, Canada", boilerplate, p
+        ) == 100
+
+    def test_location_is_inert_for_default_profile(self):
+        """Weighted 0 by default, so engineering is unaffected."""
+        assert DEFAULT_SCORE_WEIGHTS["location"] == 0
+        components = calculate_job_quality_components(
+            "Frontend Engineer", "React", "VERIFIED", DEFAULT_PROFILE, "Remote, USA"
+        )
+        assert "location" not in components
 
 
 if __name__ == "__main__":

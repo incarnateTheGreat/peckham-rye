@@ -162,6 +162,22 @@ high_level_keywords:
     - lead
     - principal
 
+# Bucket weights, summing to 100. Salary is deliberately 0: BELOW_THRESHOLD
+# already rejects a posting outright, so the only thing a salary score still
+# expressed was whether the employer chose to publish a range -- which says
+# nothing about role fit and cost every unlisted posting 15 points.
+#
+# signal = domain (premium_signals) + product skills (good_signals), 15 each.
+score_weights:
+    role: 30
+    level: 20
+    signal: 30
+    location: 15
+    tools: 5
+    salary: 0
+
+# Domain / product-environment signals. 7 points each within the signal
+# bucket, capped before scaling.
 premium_signals:
     - enterprise saas
     - b2b saas
@@ -177,8 +193,28 @@ premium_signals:
     - data quality
     - ai-enabled
 
-# Tools are scored but never required.
+# Product capabilities. 3 points each. These are the transferable
+# responsibilities that make a PM posting readable as a fit regardless of the
+# title on it -- the PO -> PM question is decided here, not by title matching.
 good_signals:
+    - customer discovery
+    - user research
+    - stakeholder management
+    - cross-functional
+    - roadmap
+    - prioritization
+    - agile
+    - scrum
+    - customer feedback
+    - adoption
+    - analytics
+    - modernization
+    - apis
+
+# Tooling: a nudge, never a filter. Isolated in its own 5-point bucket so it
+# cannot crowd out domain signals the way it did while sharing the 35-point
+# signal cap -- five tool mentions used to be worth more than two domain ones.
+tool_signals:
     - Jira
     - Confluence
     - Azure DevOps
@@ -188,7 +224,8 @@ good_signals:
     - AWS
     - AWS Bedrock
     - GitHub
-    - APIs
+    - GenAI
+    - LLM
 
 key_signal_terms:
     - product strategy
@@ -226,6 +263,36 @@ regions:
     - kitchener
     - waterloo
     - ottawa
+
+# Geographies that rule the candidate out. Scored, never filtered, and read
+# from the TITLE and LOCATION only -- country names appear in EEO boilerplate
+# and office lists throughout a description, so a full-text scan would flag
+# nearly everything.
+#
+# "u.s." is absent on purpose: re.escape makes it `u\.s\.` and a trailing \b
+# needs an adjacent word character, so it never matches at end of string.
+# Bare "us" is also unsafe -- it fires on "join us".
+region_exclusions:
+    - usa
+    - united states
+    - us only
+    - us-based
+    - us based
+    - uk
+    - united kingdom
+    - emea
+    - latam
+    - apac
+    - india
+    - australia
+    - philippines
+    - bulgaria
+    - germany
+    - poland
+    - spain
+    - brazil
+    - mexico
+    - singapore
 
 # EOR is irrelevant for a Canada-based search against Canadian employers.
 require_eor: false
