@@ -28,6 +28,7 @@ from track_jobs import (
     get_webhook_url,
     html_to_text,
     is_eor_supported,
+    is_below_seniority_floor,
     is_target_role,
     load_profile,
     matches_region,
@@ -1532,6 +1533,65 @@ class TestLocationFit:
             "Frontend Engineer", "React", "VERIFIED", DEFAULT_PROFILE, "Remote, USA"
         )
         assert "location" not in components
+
+
+class TestSeniorityFloor:
+    """Titles stating a level below the floor are rejected."""
+
+    def test_explicit_junior_titles_are_rejected(self):
+        for title in (
+            "Software Engineer Intern (Winter 2027)",
+            "Junior Frontend Developer",
+            "Graduate Software Engineer",
+            "Associate Software Engineer",
+            "Mid-Level Software Engineer",
+        ):
+            assert is_below_seniority_floor(title, DEFAULT_PROFILE) is True, title
+
+    def test_mid_level_numeral_is_rejected(self):
+        """'Software Engineer II' with no band word is mid-level."""
+        assert is_below_seniority_floor(
+            "Software Engineer II (Frontend)", DEFAULT_PROFILE
+        ) is True
+
+    def test_senior_marker_beats_a_numeral(self):
+        """The case a naive numeral check gets wrong.
+
+        A numeral is a level WITHIN a band, not the band itself, so these are
+        all at or above the floor.
+        """
+        for title in (
+            "Senior Software Engineer II",
+            "Senior II Fullstack Software Engineer, GRC",
+            "Staff Software Engineer I - SRE",
+            "Sr. Software Engineer II - AI Engineering",
+        ):
+            assert is_below_seniority_floor(title, DEFAULT_PROFILE) is False, title
+
+    def test_bare_i_does_not_reject_unrelated_titles(self):
+        """`\\bi\\b` matches the I in 'D&I', so 'i' must not be a marker."""
+        assert "i" not in DEFAULT_PROFILE.junior_title_markers
+        assert is_below_seniority_floor(
+            "Senior Software Engineer, Full-stack - D&I Solutions",
+            DEFAULT_PROFILE,
+        ) is False
+
+    def test_unmarked_title_is_not_rejected(self):
+        """Silence is not a rejection -- many seniors have no band in-title."""
+        for title in (
+            "Front End Software Engineer, Media Player",
+            "Software Engineer, Backend",
+            "Product Engineer",
+        ):
+            assert is_below_seniority_floor(title, DEFAULT_PROFILE) is False, title
+
+    def test_empty_markers_disable_the_check(self):
+        p = dataclasses.replace(DEFAULT_PROFILE, junior_title_markers=[])
+        assert is_below_seniority_floor("Junior Engineer", p) is False
+
+    def test_floor_is_wired_into_is_target_role(self):
+        assert is_target_role("Junior Frontend Engineer", "", DEFAULT_PROFILE) is False
+        assert is_target_role("Senior Frontend Engineer", "", DEFAULT_PROFILE) is True
 
 
 if __name__ == "__main__":

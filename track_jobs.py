@@ -298,6 +298,49 @@ class SearchProfile:
   # once, whereas a real product posting also names discovery or backlog.
   require_in_description_min: int = 1
 
+  # Seniority floor. A title that STATES a level below the floor is rejected.
+  # Empty disables the check; a title that states no level is never rejected,
+  # because plenty of senior postings simply don't put a band in the title.
+  #
+  # "i" is deliberately absent: `\bi\b` matches the I in "D&I Solutions" and
+  # would reject "Senior Software Engineer, Full-stack - D&I Solutions".
+  junior_title_markers: list[str] = field(
+      default_factory=lambda: [
+          "intern",
+          "internship",
+          "junior",
+          "jr",
+          "graduate",
+          "new grad",
+          "entry level",
+          "entry-level",
+          "apprentice",
+          "trainee",
+          "co-op",
+          "coop",
+          "mid-level",
+          "mid level",
+          "associate",
+          "ii",
+      ]
+  )
+
+  # Checked BEFORE junior_title_markers and wins outright. Numerals in a title
+  # are a level WITHIN a band, not the band itself: "Senior Software Engineer
+  # II" and "Staff Software Engineer I" are both at or above the floor, and
+  # matching the numeral alone would reject them.
+  senior_title_markers: list[str] = field(
+      default_factory=lambda: [
+          "senior",
+          "sr",
+          "staff",
+          "principal",
+          "lead",
+          "architect",
+          "distinguished",
+      ]
+  )
+
   # Titles rejected outright. Checked before any include rule, so keep these
   # phrase-level ("platform engineer", not "platform") to avoid collisions.
   exclude_title_exact: list[str] = field(
@@ -655,6 +698,29 @@ def _phrase_in(text: str, phrases: list[str]) -> bool:
   )
 
 
+def is_below_seniority_floor(
+    title: str,
+    profile: SearchProfile = DEFAULT_PROFILE,
+) -> bool:
+  """True when the title states a level below the profile's floor.
+
+  Silence is not a rejection: a title naming no level at all passes, because
+  many employers put the band in the description rather than the title.
+
+  Senior markers are checked first and win outright. A trailing numeral is a
+  level within a band, not the band itself -- "Senior Software Engineer II"
+  and "Staff Software Engineer I" are both at or above the floor, and reading
+  the numeral alone would throw them away.
+  """
+  if not profile.junior_title_markers:
+    return False
+
+  t = title.lower().strip()
+  if _phrase_in(t, profile.senior_title_markers):
+    return False
+  return _phrase_in(t, profile.junior_title_markers)
+
+
 def is_target_role(
     title: str,
     description: str = "",
@@ -667,6 +733,9 @@ def is_target_role(
   # Exclusions are checked first and always beat inclusions. Word-boundary
   # matched so short entries like "vp" cannot match inside another word.
   if _phrase_in(t, profile.exclude_title_exact):
+    return False
+
+  if is_below_seniority_floor(title, profile):
     return False
 
   # Either keyword tier qualifies the posting; the tiers only affect scoring.
