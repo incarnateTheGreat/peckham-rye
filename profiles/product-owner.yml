@@ -8,15 +8,82 @@
 
 name: product-owner
 
-# No curated board slugs yet — this profile has no target companies, so it
-# relies entirely on the aggregator sources below. Adding company slugs here
-# (see engineering.yml) remains the highest-signal option for Canadian roles,
-# because the free aggregators skew US/EU remote.
-boards: {}
+# Curated Canadian / B2B-SaaS / health-tech boards. Every slug here is copied
+# from engineering.yml, where it was verified to return 200 with a non-empty
+# job array, so the platform filing is already correct (e.g. getmaple is Lever
+# and d2l is Greenhouse — the Lever copies of both are different companies).
+#
+# These carry the search: the free aggregators skew US-remote, which is exactly
+# the population the Canada-eligibility problem lives in.
+boards:
+    ashby:
+        # Canadian employers
+        - wealthsimple
+        - jobber
+        - benevity
+        - thinkific
+        - cohere
+        - koho
+        - neofinancial
+        - float
+        - clearco
+        - loopio
+        - miovision
+        - lightspeedhq
+        - hopper
+        - trulioo
+        - docebo
+        # Health tech
+        - felix
+        - jane
+        - headway
+        # B2B SaaS with real product orgs
+        - clickup
+        - dovetail
+        - notion
+        - miro
+        - 1password
+        - amplitude # Ashby, not Greenhouse — verified live (37 postings)
+    greenhouse:
+        # Canadian employers
+        - hootsuite
+        - later
+        - pagerduty
+        - tailscale
+        - flipp
+        - shakepay
+        - d2l
+        - staffbase
+        # Health tech
+        - leagueinc
+        - alayacare
+        - oscar
+        # Enterprise / workflow SaaS
+        - asana
+        - smartsheet
+        - intercom
+        - coursera
+    lever:
+        # Canadian employers
+        - wattpad
+        - eqbank
+        - waveapps
+        - achievers
+        - telesat
+        - kepler
+        # Health tech
+        - pointclickcare
+        - getmaple
+        - lyrahealth
+        - ro
 
-# Aggregators are company-agnostic feeds, so they work without board slugs.
-# Both require attribution, which the alert footer provides automatically.
+# ATS fetchers must be listed here or the boards above are never polled --
+# collect_matches iterates `sources`, not `boards`. The two aggregators stay
+# on; both require attribution, which the alert footer provides automatically.
 sources:
+    - ashby
+    - greenhouse
+    - lever
     - remoteok
     - himalayas
 
@@ -54,7 +121,8 @@ require_in_description:
     - stakeholder
 
 # Word-boundary matched, so "lead" will not match "leadership". Deliberately
-# excludes no form of "technical" or "platform" — both appear in wanted titles.
+# excludes no form of "technical", "platform" or "developer" — all three
+# appear in wanted titles ("Product Manager, Developer Platform").
 exclude_title_exact:
     - junior
     - associate
@@ -65,7 +133,6 @@ exclude_title_exact:
     - head of product
     - commission
     - software engineer
-    - developer
     - devops
     # Adjacent "product" roles the generic-title fallback would otherwise let
     # through from the broad aggregator feeds.
@@ -129,18 +196,31 @@ work_modes:
     - remote
     - hybrid
 
+# Matched against the location string and the first 500 characters of the
+# description. Golden Horseshoe + Waterloo region named explicitly, because a
+# posting that says "Burlington, ON" never says "Ontario".
 regions:
     - canada
+    - canadian
     - ontario
     - toronto
     - gta
+    - oakville
+    - burlington
+    - mississauga
+    - hamilton
+    - kitchener
+    - waterloo
+    - ottawa
 
 # EOR is irrelevant for a Canada-based search against Canadian employers.
 require_eor: false
 
-# The aggregators are broad, so weak matches are logged in the run summary but
-# don't get their own card. Lower this if the channel feels too quiet.
-alert_threshold: 50
+# Lowered from 50. A plain "Product Manager" title scores 0 for level (no
+# senior/lead/principal keyword) and 5 for an unlisted salary, so its ceiling
+# is role 15 + salary 5 + signal 35 = 55. At 50 it needed a near-perfect
+# signal sweep just to get a card. 35 clears it on ~3 premium signals.
+alert_threshold: 35
 
 outreach_note_template: >-
     Hi [Name], saw the {title} opening at {company} and wanted to connect
