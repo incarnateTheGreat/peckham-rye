@@ -123,6 +123,66 @@ HIRING_REACH_BADGES = {
     HIRING_REACH_BLOCKED: "🔴 Legally restricted",
 }
 
+# Eligibility: can this posting lawfully employ someone living in Canada?
+#
+# Unlike hiring reach, this IS consulted as a filter -- but only the EXCLUDED
+# verdict drops anything. A residency requirement naming somewhere that is not
+# Canada is a fact about the role rather than a negotiating position, whereas
+# silence is the overwhelmingly common case and dropping it would empty the
+# channel.
+#   ELIGIBLE  Canada (or a region containing it) is named as workable
+#   UNCLEAR   nothing stated, or a global claim that never names Canada
+#   EXCLUDED  residency is required somewhere that is not Canada
+ELIGIBILITY_ELIGIBLE = "eligible"
+ELIGIBILITY_UNCLEAR = "unclear"
+ELIGIBILITY_EXCLUDED = "excluded"
+
+# Card ordering: stated-eligible first. Profiles that don't assess eligibility
+# report None for every posting, which sorts as a constant and so leaves their
+# existing order untouched.
+ELIGIBILITY_ORDER = {
+    ELIGIBILITY_ELIGIBLE: 0,
+    ELIGIBILITY_UNCLEAR: 1,
+    ELIGIBILITY_EXCLUDED: 2,
+}
+
+# (field name, value, inline). UNCLEAR is deliberately full-width: eligibility
+# is the single thing the candidate must verify before spending time on an
+# application, so it must not sit in a column beside three other badges.
+ELIGIBILITY_BADGES = {
+    ELIGIBILITY_ELIGIBLE: ("✅ Eligibility", "Canada-eligible (stated)", True),
+    ELIGIBILITY_UNCLEAR: (
+        "⚠️ Eligibility",
+        "🟠 **Not stated** — confirm Canada eligibility before applying",
+        False,
+    ),
+}
+
+# How far past a residency stem ("must reside in") to read looking for a place
+# name. Long enough to clear "one of the following countries:", short enough
+# not to run into the next sentence.
+RESIDENCY_WINDOW_CHARS = 60
+
+# A stated office cadence at or above this is not hybrid, it is onsite.
+FULL_WEEK_OFFICE_DAYS = 5
+
+_OFFICE_DAY_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+
+# Office cadence, written either way round ("3 days in the office" /
+# "in-office 3 days a week"). The office token MUST appear within a short
+# window of the number: without that constraint "5 days a week" -- the working
+# week itself -- matches nearly every posting ever written.
+_OFFICE_TOKEN = r"(?:office|on-?site|in[-\s]person)"
+_OFFICE_DAY_COUNT = (
+    r"(?P<atleast>at least|a minimum of|minimum of|no fewer than)?\s*"
+    r"(?P<count>[1-5]|one|two|three|four|five)\s*"
+    r"(?P<plus>\+|or more)?\s*days?\b"
+)
+_OFFICE_DAYS_PATTERNS = (
+    re.compile(_OFFICE_DAY_COUNT + r"[^.;!?]{0,40}?" + _OFFICE_TOKEN, re.I),
+    re.compile(_OFFICE_TOKEN + r"[^.;!?]{0,40}?" + _OFFICE_DAY_COUNT, re.I),
+)
+
 
 # Discord accepts at most 10 embeds per webhook message.
 DISCORD_EMBEDS_PER_MESSAGE = 10
@@ -428,6 +488,48 @@ class SearchProfile:
       default_factory=lambda: ["on-site", "onsite", "in-office", "in office"]
   )
 
+  # Work-mode vocabulary trusted in the DESCRIPTION body, which needs to be
+  # narrower than the two lists above. Those are matched against the short
+  # location field, where a bare "hybrid" is unambiguous; in a description it
+  # also fires on "hybrid cloud" and "hybrid app", which would reclassify
+  # genuinely remote engineering roles as hybrid and drop them.
+  hybrid_description_markers: list[str] = field(
+      default_factory=lambda: [
+          "hybrid work",
+          "hybrid working",
+          "hybrid model",
+          "hybrid role",
+          "hybrid position",
+          "hybrid schedule",
+          "hybrid environment",
+          "hybrid arrangement",
+          "hybrid setup",
+          "work hybrid",
+      ]
+  )
+  onsite_description_markers: list[str] = field(
+      default_factory=lambda: [
+          "fully on-site",
+          "fully onsite",
+          "fully in-office",
+          "100% on-site",
+          "100% onsite",
+          "based in our office",
+          "based out of our office",
+      ]
+  )
+
+  # Commute reach for postings that put the candidate in an office. Checked
+  # ONLY for hybrid/onsite postings, so a remote role elsewhere in the
+  # country is unaffected -- which is why this is separate from `regions`.
+  # Empty disables the check.
+  commutable_regions: list[str] = field(default_factory=list)
+
+  # Cap on stated in-office days per week. None disables the check, and a
+  # posting that states no cadence is always kept: this can only act on what
+  # the description actually says.
+  max_office_days_per_week: int | None = None
+
   # Employer of Record detection. Deliberately narrow: only explicit EOR
   # terminology and named EOR vendors. Broad terms like "canada",
   # "international" or "contractor" were removed because they match EEO
@@ -518,6 +620,38 @@ class SearchProfile:
   # never the description, where country names appear in EEO boilerplate and
   # office lists. Empty by default, so this is inert for existing profiles.
   region_exclusions: list[str] = field(default_factory=list)
+
+  # ---------------------------------------------------------------------
+  # Canada eligibility vocabulary. All four lists are empty by default and
+  # `classify_eligibility` returns None unless `regions` is set, so the whole
+  # mechanism is inert for profiles that don't opt in.
+  # ---------------------------------------------------------------------
+
+  # Tier 1: phrases that name the candidate's own geography as workable.
+  # A hit here beats every blocker below -- an employer that says it can hire
+  # in Canada has answered the only question being asked.
+  region_allowances: list[str] = field(default_factory=list)
+
+  # Tier 2: global-sounding claims that never name the candidate's geography
+  # specifically. These PASS the filter but report UNCLEAR rather than
+  # ELIGIBLE: "work from anywhere" routinely means "anywhere we already run
+  # payroll", and treating it as a promise would be the same mistake as
+  # treating a bare "Remote" as Canada-eligible.
+  region_global_claims: list[str] = field(default_factory=list)
+
+  # Complete residency phrases that rule the candidate out on their own.
+  # Keep every entry a full phrase: bare "us" fires on "join us", and "u.s."
+  # can never match at all, because re.escape makes it `u\.s\.` and a
+  # trailing \b needs a following word character.
+  region_blockers: list[str] = field(default_factory=list)
+
+  # Residency stems read together with the ~60 characters that follow them.
+  # The stem alone decides nothing -- "must reside in Canada" and "must
+  # reside in the United States" are the same phrase up to the place name --
+  # so the window is matched against `regions` first and `region_exclusions`
+  # second, and a stem whose window names neither is left UNCLEAR rather than
+  # being treated as disqualifying.
+  residency_markers: list[str] = field(default_factory=list)
 
   # Off by default: EOR support is rarely stated even when it exists, so
   # requiring it drops good postings rather than filtering bad ones. Detection
@@ -760,6 +894,29 @@ def is_target_role(
   return False
 
 
+def required_office_days(description: str) -> int | None:
+  """Lowest in-office days per week the posting states, or None if unstated.
+
+  Open-ended constructions ("3+ days", "at least 3 days") report one MORE
+  than the numeral. They promise no upper bound, so reading the numeral
+  literally would let an unbounded requirement slip past a cap set to it.
+
+  The strictest stated cadence governs when a posting names several: the
+  point of the cap is protecting a commute, so the heaviest week is the one
+  that has to fit.
+  """
+  text = (description or "").lower()
+  found = []
+  for pattern in _OFFICE_DAYS_PATTERNS:
+    for m in pattern.finditer(text):
+      token = m.group("count")
+      days = int(token) if token.isdigit() else _OFFICE_DAY_WORDS[token]
+      if m.group("plus") or m.group("atleast"):
+        days += 1
+      found.append(days)
+  return max(found) if found else None
+
+
 def detect_work_mode(
     location: str,
     workplace_type: str,
@@ -770,6 +927,12 @@ def detect_work_mode(
 
   Explicit hybrid/onsite markers win over remote language, so a posting tagged
   "remote" but located "Hybrid - Toronto" is treated as hybrid.
+
+  The description is consulted too, because plenty of ATS postings carry a
+  clean "Toronto, ON" location and bury "hybrid, 4 days in office" in the
+  body. Body text is read with the narrower `*_description_markers`
+  vocabulary, and only within the leading window, for the same reason the
+  rest of the pipeline avoids full-text geography scans.
   """
   loc_str = (location or "").lower()
   wp_type = (workplace_type or "").lower()
@@ -784,12 +947,32 @@ def detect_work_mode(
   if any(marker in loc_str for marker in profile.onsite_markers):
     return "onsite"
 
+  if any(m in text_head for m in profile.onsite_description_markers):
+    return "onsite"
+
+  if any(m in text_head for m in profile.hybrid_description_markers):
+    return "hybrid"
+
+  # A stated cadence is itself the marker: "4 days per week in the office"
+  # describes a hybrid role no matter how the location field is written.
+  office_days = required_office_days(text_head)
+  if office_days is not None:
+    return "onsite" if office_days >= FULL_WEEK_OFFICE_DAYS else "hybrid"
+
   if wp_type == "remote" or any(
       p in loc_str or p in text_head for p in profile.remote_positive
   ):
     return "remote"
 
   return "unknown"
+
+
+def accepts_work_mode(work_mode: str, profile: SearchProfile) -> bool:
+  """True when a detected mode is one the profile accepts.
+
+  An empty `work_modes` disables mode filtering entirely.
+  """
+  return not profile.work_modes or work_mode in profile.work_modes
 
 
 def matches_work_mode(
@@ -799,11 +982,8 @@ def matches_work_mode(
     profile: SearchProfile = DEFAULT_PROFILE,
 ) -> bool:
   """Check the detected work mode against the profile's accepted modes."""
-  if not profile.work_modes:
-    return True
-
-  return detect_work_mode(location, workplace_type, description, profile) in (
-      profile.work_modes
+  return accepts_work_mode(
+      detect_work_mode(location, workplace_type, description, profile), profile
   )
 
 
@@ -830,6 +1010,144 @@ def matches_region(
   if not loc_str:
     return True
   return any(w in loc_str for w in profile.region_wildcards)
+
+
+def is_commutable(
+    location: str,
+    description: str,
+    profile: SearchProfile = DEFAULT_PROFILE,
+) -> bool:
+  """Check an office-attending posting against the commutable region list.
+
+  Separate from `matches_region` on purpose: a remote role anywhere in the
+  country is fine, whereas a hybrid one is only fine within travelling
+  distance. Callers apply this to hybrid/onsite postings only.
+  """
+  if not profile.commutable_regions:
+    return True
+
+  loc_str = (location or "").lower()
+  text_head = (description or "").lower()[:500]
+  return (
+      _phrase_in(loc_str, profile.commutable_regions)
+      or _phrase_in(text_head, profile.commutable_regions)
+  )
+
+
+def meets_commute_constraints(
+    work_mode: str,
+    location: str,
+    description: str,
+    office_days: int | None,
+    profile: SearchProfile = DEFAULT_PROFILE,
+) -> bool:
+  """Check an office-attending posting against the profile's commute limits.
+
+  The region check applies only to hybrid/onsite postings -- a remote role in
+  another city is not a commute. The day cap applies whenever a cadence was
+  stated, because a posting that names one has answered the question however
+  its location field is written.
+
+  Both are inert unless the profile sets the corresponding field, and a
+  posting that states no cadence is always kept.
+  """
+  if work_mode in ("hybrid", "onsite") and not is_commutable(
+      location, description, profile
+  ):
+    return False
+
+  cap = profile.max_office_days_per_week
+  return cap is None or office_days is None or office_days <= cap
+
+
+def _residency_verdict(text: str, profile: SearchProfile) -> str | None:
+  """Read any stated residency requirement, or None when none is stated.
+
+  Each stem is read together with the window of text that follows it, since
+  the stem alone carries no verdict. Naming an accepted region anywhere wins
+  outright, so "must reside in one of: the United States, Canada or the UK"
+  resolves as eligible rather than excluded.
+  """
+  verdict = None
+  for stem in profile.residency_markers:
+    for m in re.finditer(r"\b" + re.escape(stem.lower()) + r"\b", text):
+      window = text[m.end():m.end() + RESIDENCY_WINDOW_CHARS]
+      if _phrase_in(window, profile.regions):
+        return ELIGIBILITY_ELIGIBLE
+      if _phrase_in(window, profile.region_exclusions):
+        verdict = ELIGIBILITY_EXCLUDED
+      elif verdict is None:
+        # A stem whose window names nowhere recognisable proves nothing.
+        verdict = ELIGIBILITY_UNCLEAR
+  return verdict
+
+
+def classify_eligibility(
+    title: str,
+    location: str,
+    description: str,
+    profile: SearchProfile = DEFAULT_PROFILE,
+) -> str | None:
+  """Decide whether this posting can employ someone in the profile's region.
+
+  Returns ELIGIBILITY_{ELIGIBLE,UNCLEAR,EXCLUDED}, or None for a profile that
+  names no `regions` at all -- there is no question to answer then, and
+  returning None keeps the filter and the card inert rather than labelling
+  every posting.
+
+  Precedence, highest first:
+    1. An allowance naming an accepted region.
+    2. A residency requirement, read with the place name that follows it.
+    3. A complete blocker phrase.
+    4. An excluded region in the TITLE or LOCATION with no accepted region
+       named alongside it -- this is the "Remote, USA" case.
+    5. An accepted region named in the title or location.
+    6. Anything else, including a global claim that never names the region.
+
+  Only EXCLUDED is a rejection. UNCLEAR passes and is flagged on the card.
+
+  Steps 4 and 5 read the title and location only. Country names are scattered
+  through EEO boilerplate and office lists, so letting a bare "Canada" in the
+  body carry a verdict would badge a US-only posting as eligible on the
+  strength of a sentence about where the company has desks. Body text earns a
+  verdict only through the specific phrasings in `region_allowances` and
+  `residency_markers`, which state something about hiring rather than
+  geography.
+  """
+  if not profile.regions:
+    return None
+
+  hay = f"{title or ''} {location or ''}".lower()
+  full = f"{location or ''} {description or ''}".lower()
+
+  if _phrase_in(full, profile.region_allowances):
+    return ELIGIBILITY_ELIGIBLE
+
+  residency = _residency_verdict(full, profile)
+  if residency in (ELIGIBILITY_ELIGIBLE, ELIGIBILITY_EXCLUDED):
+    return residency
+
+  if _phrase_in(full, profile.region_blockers):
+    return ELIGIBILITY_EXCLUDED
+
+  names_region = _phrase_in(hay, profile.regions)
+  if _phrase_in(hay, profile.region_exclusions) and not names_region:
+    # "Remote, USA" with nothing of ours alongside it. A tier-2 global claim
+    # downgrades this to UNCLEAR rather than clearing it: weak evidence of
+    # reach is still a reason to look, but never a promise. A tier-1
+    # allowance or a blocker has already returned above, so neither is in
+    # play here.
+    if _phrase_in(full, profile.region_global_claims):
+      return ELIGIBILITY_UNCLEAR
+    return ELIGIBILITY_EXCLUDED
+
+  if names_region:
+    return ELIGIBILITY_ELIGIBLE
+
+  # Global claims land here deliberately. They are the reason this function
+  # exists -- a posting can sound unrestricted and still have nowhere to put
+  # a Canadian on payroll -- so they pass the filter but claim nothing.
+  return ELIGIBILITY_UNCLEAR
 
 
 def is_eor_supported(
@@ -1015,23 +1333,30 @@ def score_location_fit(
     description: str = "",
     profile: SearchProfile = DEFAULT_PROFILE,
     reach: str | None = None,
+    eligibility: str | None = None,
 ) -> int:
   """Rate how employable the candidate is for this posting, 0-100.
 
-  Deliberately reads the TITLE and LOCATION only, never the description.
-  Country names are scattered through EEO boilerplate and office lists, so a
-  full-text scan would flag almost every posting; the same reasoning already
-  keeps broad terms out of `eor_signals`. The evidence is in the short fields
-  anyway -- "Remote, USA" in the location, "Createspace, USA Based" in the
-  title.
+  Reads the TITLE and LOCATION directly, never the description. Country names
+  are scattered through EEO boilerplate and office lists, so a full-text scan
+  would flag almost every posting; the same reasoning already keeps broad
+  terms out of `eor_signals`. The evidence is in the short fields anyway --
+  "Remote, USA" in the location, "Createspace, USA Based" in the title.
 
-  `detect_hiring_reach` is the one full-text input, and only via its verdict.
-  Callers that already have it should pass it in: it is the most expensive
-  scan in the pipeline and `process_job_posting` needs it regardless.
+  `detect_hiring_reach` and `classify_eligibility` are the two full-text
+  inputs, and only via their verdicts. Callers that already hold them should
+  pass them in: both are expensive scans and `process_job_posting` needs them
+  regardless. Sharing the eligibility verdict is also what stops the score
+  disagreeing with the filter that reads it.
   """
   if reach is None:
     reach = detect_hiring_reach(location, description, profile)
   if reach == HIRING_REACH_BLOCKED:
+    return 0
+
+  if eligibility is None:
+    eligibility = classify_eligibility(title, location, description, profile)
+  if eligibility == ELIGIBILITY_EXCLUDED:
     return 0
 
   hay = f"{title or ''} {location or ''}".lower()
@@ -1046,6 +1371,11 @@ def score_location_fit(
     return 100
   if names_excluded:
     return 0
+
+  # Stated eligibility the short fields couldn't show -- "remote in Canada"
+  # in the body of a posting whose location field just says "Remote".
+  if eligibility == ELIGIBILITY_ELIGIBLE:
+    return 100
 
   if reach == HIRING_REACH_OPEN:
     return 100
@@ -1086,6 +1416,7 @@ def calculate_job_quality_components(
     profile: SearchProfile = DEFAULT_PROFILE,
     location: str = "",
     reach: str | None = None,
+    eligibility: str | None = None,
 ) -> dict[str, int]:
   """Score a posting bucket by bucket, scaled to the profile's weights.
 
@@ -1121,7 +1452,9 @@ def calculate_job_quality_components(
       # 4. Role focus.
       "role": _role_focus_raw(title_lower, profile),
       # 5. Location / work-authorization fit.
-      "location": score_location_fit(title, location, content, profile, reach),
+      "location": score_location_fit(
+          title, location, content, profile, reach, eligibility
+      ),
       # 6. Tooling. A small nudge, never a requirement, so a posting that
       # names none of them is not penalised beyond forgoing the bucket.
       # Scored against a handful of hits rather than the whole list: the
@@ -1146,10 +1479,11 @@ def calculate_job_quality_score(
     profile: SearchProfile = DEFAULT_PROFILE,
     location: str = "",
     reach: str | None = None,
+    eligibility: str | None = None,
 ) -> int:
   """Total quality score, 0-100. See calculate_job_quality_components."""
   return calculate_job_quality_components(
-      title, content, salary_status, profile, location, reach
+      title, content, salary_status, profile, location, reach, eligibility
   )["total"]
 
 
@@ -1271,6 +1605,9 @@ def build_job_embed(
   salary_badge, color = _salary_badge(match)
 
   location_value = f"{match['location']} — {match['work_mode'].title()}"
+  office_days = match.get("office_days")
+  if office_days:
+    location_value += f"\n{office_days} day(s)/week in office"
   fields = [
       {"name": "📊 Quality Breakdown",
        "value": _score_badge(
@@ -1298,6 +1635,15 @@ def build_job_embed(
     fields.append(
         {"name": "🧭 Hiring Reach", "value": reach_badge, "inline": True}
     )
+
+  # Eligibility is the one thing that has to be settled before any time is
+  # spent on an application, so UNCLEAR is rendered rather than hidden --
+  # the opposite of the rule the EOR and reach fields follow. Profiles that
+  # assess no regions report None and render nothing at all.
+  eligibility_badge = ELIGIBILITY_BADGES.get(match.get("eligibility"))
+  if eligibility_badge:
+    name, value, inline = eligibility_badge
+    fields.append({"name": name, "value": value, "inline": inline})
 
   fields.extend([
       {"name": "🛠️ Key Signals", "value": match.get("key_tech") or "Not specified",
@@ -1349,10 +1695,15 @@ def send_discord_alerts(
 
   run_time_str = get_formatted_timestamp(profile.timezone)
 
-  # Most-reachable first, then best-scoring. Nothing is dropped by reach; a
-  # legally-blocked posting still gets a card, it just lands at the bottom.
+  # Stated-eligible first, then most-reachable, then best-scoring. Nothing is
+  # dropped by either annotation here. Profiles that assess no eligibility
+  # report None for every posting, so that key is constant for them and the
+  # existing reach/score order is untouched.
   alertable.sort(
       key=lambda m: (
+          ELIGIBILITY_ORDER.get(
+              m.get("eligibility"), ELIGIBILITY_ORDER[ELIGIBILITY_UNCLEAR]
+          ),
           HIRING_REACH_ORDER.get(
               m.get("hiring_reach"), HIRING_REACH_ORDER[HIRING_REACH_UNSTATED]
           ),
@@ -1394,10 +1745,27 @@ def process_job_posting(
   work_mode = detect_work_mode(
       location, job.get("workplace_type") or "", content, profile
   )
-  if profile.work_modes and work_mode not in profile.work_modes:
+  if not accepts_work_mode(work_mode, profile):
     return None
 
   if not matches_region(location, content, profile):
+    return None
+
+  # Canada eligibility. Only EXCLUDED rejects: a residency requirement naming
+  # somewhere else is a fact about the role, whereas silence is the common
+  # case and dropping it would leave the channel empty. UNCLEAR rides along
+  # and is flagged on the card instead.
+  eligibility = classify_eligibility(title, location, content, profile)
+  if eligibility == ELIGIBILITY_EXCLUDED:
+    return None
+
+  # Commute constraints. Inert for a remote posting and for any profile that
+  # leaves the fields unset. `office_days` is read regardless of detected
+  # mode, since the figure is worth showing on the card either way.
+  office_days = required_office_days(content)
+  if not meets_commute_constraints(
+      work_mode, location, content, office_days, profile
+  ):
     return None
 
   eor_detected = is_eor_supported(location, content, profile)
@@ -1416,7 +1784,8 @@ def process_job_posting(
 
   key_tech = extract_key_signals(content, profile)
   score_components = calculate_job_quality_components(
-      title, content, salary_status, profile, location, hiring_reach
+      title, content, salary_status, profile, location, hiring_reach,
+      eligibility,
   )
   quality_score = score_components["total"]
   recruiter_url = (
@@ -1435,8 +1804,10 @@ def process_job_posting(
       "url": job.get("url"),
       "location": location or "Remote",
       "work_mode": work_mode,
+      "office_days": office_days,
       "eor_detected": eor_detected,
       "hiring_reach": hiring_reach,
+      "eligibility": eligibility,
       "salary_text": salary_text,
       "salary_status": salary_status,
       "key_tech": key_tech,

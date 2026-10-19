@@ -21,12 +21,14 @@ from track_jobs import (
     build_job_embed,
     calculate_job_quality_components,
     calculate_job_quality_score,
+    classify_eligibility,
     collect_matches,
     detect_hiring_reach,
     detect_work_mode,
     extract_key_signals,
     get_webhook_url,
     html_to_text,
+    is_commutable,
     is_eor_supported,
     is_below_seniority_floor,
     is_target_role,
@@ -34,6 +36,7 @@ from track_jobs import (
     matches_region,
     matches_work_mode,
     parse_salary_info,
+    required_office_days,
     score_location_fit,
 )
 import check_boards
@@ -714,8 +717,8 @@ class TestProfileAwareRoleFiltering:
 
     def test_pm_titles_pass_pm_profile_only(self):
         p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
-        assert is_target_role("Senior Product Manager", "", p) is True
-        assert is_target_role("Senior Product Manager", "", DEFAULT_PROFILE) is False
+        assert is_target_role("Product Manager", "", p) is True
+        assert is_target_role("Product Manager", "", DEFAULT_PROFILE) is False
 
     def test_engineering_titles_fail_pm_profile(self):
         p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
@@ -734,10 +737,9 @@ class TestProfileAwareRoleFiltering:
         assert is_target_role("VP Product", "", p) is False
 
     def test_exclusions_are_word_boundary_matched(self):
-        """'lead' as an exclusion must not match 'leadership'"""
+        """'vp' as an exclusion must not match inside 'VPN'"""
         p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
-        # "vp" is excluded, but must not match inside another word
-        assert is_target_role("Senior Product Manager, VPN Tools", "", p) is True
+        assert is_target_role("Product Manager, VPN Tools", "", p) is True
 
     def test_generic_product_title_requires_description(self):
         p = load_profile(str(PROFILES_DIR / "product-owner.yml"))
@@ -1399,7 +1401,7 @@ class TestWeightedScoring:
         p = self._pm()
         assert p.score_weights["salary"] == 0
         components = calculate_job_quality_components(
-            "Senior Product Manager", "Own the roadmap", "VERIFIED", p
+            "Product Manager", "Own the roadmap", "VERIFIED", p
         )
         assert "salary" not in components
         assert "salary" not in _score_badge(
@@ -1407,16 +1409,16 @@ class TestWeightedScoring:
         ).lower()
 
     def test_role_bucket_scales_to_its_weight(self):
-        """Role is weighted 30 for this profile, so primary must score 30."""
+        """Role is weighted 40 for this profile, so primary must score 40."""
         p = self._pm()
         primary = calculate_job_quality_components(
             "Product Manager", "", "UNLISTED", p
         )
         secondary = calculate_job_quality_components(
-            "Product Lead", "", "UNLISTED", p
+            "Product Owner", "", "UNLISTED", p
         )
-        assert primary["role"] == 30
-        assert secondary["role"] == 24  # 12/15 of 30
+        assert primary["role"] == 40
+        assert secondary["role"] == 32  # 12/15 of 40
 
     def test_weights_sum_to_one_hundred(self):
         p = self._pm()
@@ -1592,6 +1594,495 @@ class TestSeniorityFloor:
     def test_floor_is_wired_into_is_target_role(self):
         assert is_target_role("Junior Frontend Engineer", "", DEFAULT_PROFILE) is False
         assert is_target_role("Senior Frontend Engineer", "", DEFAULT_PROFILE) is True
+
+
+# =============================================================================
+# SENIORITY BAND (product-owner)
+# =============================================================================
+class TestProductBandFiltering:
+    """The PM search is for Product Owner / Product Manager only.
+
+    Everything above that band is excluded by title rather than scored, so
+    `level` is weighted 0 -- see the note in product-owner.yml.
+    """
+
+    @pytest.fixture
+    def pm(self):
+        return load_profile(str(PROFILES_DIR / "product-owner.yml"))
+
+    def test_plain_band_titles_pass(self, pm):
+        for title in (
+            "Product Manager",
+            "Product Owner",
+            "Technical Product Manager",
+            "Platform Product Manager",
+            "Product Manager, Developer Platform",
+        ):
+            assert is_target_role(title, "", pm) is True, title
+
+    def test_above_band_titles_are_rejected(self, pm):
+        for title in (
+            "Senior Product Manager",
+            "Senior, Product Management",
+            "Sr. Product Manager",
+            "Senior Technical Product Owner",
+            "Principal Product Manager",
+            "Principal, Product Management",
+            "Staff Product Manager",
+            "Group Product Manager",
+            "Lead Product Owner",
+            "Product Lead",
+        ):
+            assert is_target_role(title, "", pm) is False, title
+
+    def test_principal_engineer_leak_is_closed(self, pm):
+        """A long-standing generic-fallback leak the band filter also fixes.
+
+        'Principal Engineer, Product Engineering' matches no product keyword
+        but reaches the generic `product` fallback, and its description
+        carries enough roadmap/discovery language to clear the minimum.
+        """
+        rich = "Own the roadmap, run discovery and groom the backlog"
+        assert is_target_role(
+            "Principal Engineer, Product Engineering", rich, pm
+        ) is False
+
+    def test_senior_care_vocabulary_is_not_a_seniority_marker(self, pm):
+        """The reason the band exclusions are phrase-level, not bare words.
+
+        Senior care is the core product domain at PointClickCare and
+        AlayaCare, both of which are on this profile's board list, so a bare
+        "senior" exclusion would throw their postings away. Same shape for
+        "staff scheduling" and "group benefits".
+        """
+        for title in (
+            "Product Manager, Senior Living Solutions",
+            "Product Owner - Senior Care Platform",
+            "Product Manager, Staff Scheduling",
+            "Product Manager, Group Benefits",
+        ):
+            assert is_target_role(title, "", pm) is True, title
+
+    def test_level_bucket_is_weighted_out(self, pm):
+        """Every surviving title scores the same on level, so it cannot rank."""
+        assert pm.score_weights["level"] == 0
+        components = calculate_job_quality_components(
+            "Product Manager", "Own the roadmap", "UNLISTED", pm
+        )
+        assert "level" not in components
+
+    def test_redistributed_weights_still_sum_to_one_hundred(self, pm):
+        assert sum(pm.score_weights.values()) == 100
+
+    def test_redistributed_weights_truncate_nothing(self, pm):
+        """The weights were picked so integer scaling is exact.
+
+        `_scale_to_weight` floors, so a weight that does not divide its
+        raw_max silently loses a point on some inputs.
+        """
+        for raw in (12, 15):  # secondary, primary
+            assert (raw * 40) % 15 == 0, raw
+        for raw in (0, 20, 50, 60, 100):  # every reachable location raw
+            assert (raw * 20) % 100 == 0, raw
+
+
+# =============================================================================
+# CANADA ELIGIBILITY
+# =============================================================================
+class TestEligibilityClassification:
+    """classify_eligibility decides whether a posting can employ the
+    candidate where they already live. Only EXCLUDED is a rejection."""
+
+    @pytest.fixture
+    def pm(self):
+        return load_profile(str(PROFILES_DIR / "product-owner.yml"))
+
+    def test_inert_without_regions(self):
+        """No regions means no question to answer, so nothing is labelled."""
+        assert classify_eligibility(
+            "Frontend Engineer", "Remote, USA", "", DEFAULT_PROFILE
+        ) is None
+
+    def test_allowance_beats_a_us_location(self, pm):
+        """Where the job is does not matter if it can hire here."""
+        assert classify_eligibility(
+            "Product Manager", "Remote, USA",
+            "We are open to candidates in Canada.", pm,
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_us_only_remote_is_excluded(self, pm):
+        """'Remote, USA' is the posting that used to top the board."""
+        assert classify_eligibility(
+            "Product Manager", "Remote, USA", "", pm
+        ) == track_jobs.ELIGIBILITY_EXCLUDED
+
+    def test_residency_requirement_naming_elsewhere_is_excluded(self, pm):
+        assert classify_eligibility(
+            "Product Manager", "Remote",
+            "You must reside in the United States to be considered.", pm,
+        ) == track_jobs.ELIGIBILITY_EXCLUDED
+
+    def test_residency_requirement_naming_canada_is_eligible(self, pm):
+        assert classify_eligibility(
+            "Product Manager", "Remote",
+            "You must reside in Canada for this role.", pm,
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_multi_country_residency_list_passes_on_canada(self, pm):
+        """The stem alone decides nothing -- the window has to be read.
+
+        A posting listing several acceptable countries is eligible as long as
+        Canada is one of them.
+        """
+        assert classify_eligibility(
+            "Product Manager", "Remote",
+            "Candidates must be located in one of the United States, Canada"
+            " or the United Kingdom.", pm,
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_company_head_office_is_not_a_residency_requirement(self, pm):
+        """'based in' describes the employer, not a constraint on the hire.
+
+        US-headquartered firms staff Toronto offices; reading their head
+        office as a residency bar would drop exactly the wrong postings.
+        """
+        assert classify_eligibility(
+            "Product Manager", "Toronto, ON",
+            "Acme is a company based in the United States.", pm,
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_bare_remote_is_unclear_not_eligible(self, pm):
+        """The whole point: 'Remote' is not a claim about Canada."""
+        assert classify_eligibility(
+            "Product Manager", "Remote", "Build great products.", pm
+        ) == track_jobs.ELIGIBILITY_UNCLEAR
+
+    def test_global_claim_is_unclear_not_eligible(self, pm):
+        """'Work from anywhere' routinely means 'anywhere we run payroll'."""
+        assert classify_eligibility(
+            "Product Manager", "Remote",
+            "We are fully distributed -- work from anywhere.", pm,
+        ) == track_jobs.ELIGIBILITY_UNCLEAR
+
+    def test_global_claim_downgrades_an_excluded_location(self, pm):
+        """Weak evidence of reach is a reason to look, never a promise."""
+        assert classify_eligibility(
+            "Product Manager", "Remote, USA",
+            "We hire anywhere in the world.", pm,
+        ) == track_jobs.ELIGIBILITY_UNCLEAR
+
+    def test_blocker_beats_a_global_claim(self, pm):
+        """A stated bar outranks a marketing line about being global."""
+        assert classify_eligibility(
+            "Product Manager", "Remote",
+            "Work from anywhere! This role is US-based.", pm,
+        ) == track_jobs.ELIGIBILITY_EXCLUDED
+
+    def test_both_countries_named_is_not_excluded(self, pm):
+        """D2L's 'USA Based' title on a 'Canada, Remote' posting."""
+        assert classify_eligibility(
+            "Product Manager - Createspace, USA Based", "Canada, Remote", "", pm
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_eeo_boilerplate_does_not_exclude(self, pm):
+        """Country names in a footer are not a residency requirement."""
+        boilerplate = (
+            "We are an equal opportunity employer. Our offices span the"
+            " United States, the United Kingdom and India."
+        )
+        assert classify_eligibility(
+            "Product Manager", "Toronto, ON", boilerplate, pm
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_office_list_does_not_rescue_a_us_only_posting(self, pm):
+        """A mention of Canada is not a claim that Canada can be hired in.
+
+        Caught by mutation testing: while the description head counted
+        towards `regions`, any US-only posting that happened to mention a
+        Canadian office was badged green. Body text earns a verdict only
+        through allowance or residency phrasing, which says something about
+        hiring rather than about where the company keeps desks.
+        """
+        assert classify_eligibility(
+            "Product Manager", "Remote, USA",
+            "Acme has offices in Toronto, Canada and in New York.", pm,
+        ) == track_jobs.ELIGIBILITY_EXCLUDED
+
+    def test_an_allowance_still_rescues_it(self, pm):
+        """The same posting, saying something about hiring instead."""
+        assert classify_eligibility(
+            "Product Manager", "Remote, USA",
+            "Acme is open to candidates in Canada.", pm,
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_bare_north_america_is_not_an_allowance(self, pm):
+        """Found live: it badged 'New York - Remote' and 'Spain - Remote'
+        as Canada-eligible.
+
+        "North America" is a market, not a hiring claim, and sales postings
+        say it constantly. Only the explicit forms qualify.
+        """
+        assert "north america" not in pm.region_allowances
+        assert classify_eligibility(
+            "Product Manager", "New York - Remote",
+            "Supporting our North America revenue team.", pm,
+        ) == track_jobs.ELIGIBILITY_EXCLUDED
+        assert classify_eligibility(
+            "Product Manager", "Remote",
+            "You may work anywhere in North America.", pm,
+        ) == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_us_metro_in_location_is_excluded(self, pm):
+        """How these feeds usually write a US-only remote role."""
+        for loc in ("New York - Remote", "Remote (USA - Boston, MA)",
+                    "San Francisco, Remote"):
+            assert classify_eligibility("Product Manager", loc, "", pm) == (
+                track_jobs.ELIGIBILITY_EXCLUDED
+            ), loc
+
+    def test_no_ambiguous_state_codes_are_used(self, pm):
+        """US state codes are unusable here, however tempting.
+
+        "CA" is California and Canada; "ON" is Ontario and nothing in the US
+        but sits inside dozens of words. "uk" is fine and stays -- it is a
+        country abbreviation with no Canadian collision.
+        """
+        for code in ("ca", "on", "or", "in", "de", "me", "la", "wa"):
+            assert code not in pm.region_exclusions, code
+
+    def test_london_ontario_is_not_excluded(self, pm):
+        """The collision that keeps 'london' out of the exclusion list."""
+        assert "london" not in pm.region_exclusions
+
+
+class TestEligibilityFiltering:
+    """Only EXCLUDED drops a posting. UNCLEAR must survive -- it is the
+    common case, and dropping it would leave the channel empty."""
+
+    @pytest.fixture
+    def pm(self):
+        return load_profile(str(PROFILES_DIR / "product-owner.yml"))
+
+    @staticmethod
+    def _job(**overrides):
+        job = {
+            "id": "ashby_1",
+            "source": "ashby",
+            "company": "Acme",
+            "title": "Product Manager",
+            "location": "Toronto, ON",
+            "workplace_type": "remote",
+            "content": (
+                "Own the roadmap, run discovery, manage the backlog and"
+                " prioritization with stakeholders."
+            ),
+            "url": "https://example.com/j",
+        }
+        job.update(overrides)
+        return job
+
+    def test_excluded_posting_is_dropped(self, pm):
+        job = self._job(location="Remote, USA")
+        assert track_jobs.process_job_posting(job, pm) is None
+
+    def test_unclear_posting_survives_and_is_labelled(self, pm):
+        job = self._job(location="Remote")
+        match = track_jobs.process_job_posting(job, pm)
+        assert match is not None
+        assert match["eligibility"] == track_jobs.ELIGIBILITY_UNCLEAR
+
+    def test_eligible_posting_is_labelled(self, pm):
+        match = track_jobs.process_job_posting(self._job(), pm)
+        assert match["eligibility"] == track_jobs.ELIGIBILITY_ELIGIBLE
+
+    def test_default_profile_is_unaffected(self):
+        """Engineering names no regions, so nothing is assessed or dropped."""
+        job = self._job(
+            title="Senior Frontend Engineer",
+            location="Remote, USA",
+            content="React, TypeScript and GraphQL across the frontend.",
+        )
+        match = track_jobs.process_job_posting(job, DEFAULT_PROFILE)
+        assert match is not None
+        assert match["eligibility"] is None
+
+    def test_score_agrees_with_the_filter(self, pm):
+        """A body-only allowance must lift the score, not just pass the gate.
+
+        If the scorer could not see what the filter saw, a Canada-eligible
+        posting whose location field just says 'Remote' would be carded at
+        the unstated-silence rate.
+        """
+        assert score_location_fit(
+            "Product Manager", "Remote",
+            "This role is open to candidates in Canada.", pm,
+        ) == 100
+
+
+# =============================================================================
+# COMMUTE CONSTRAINTS
+# =============================================================================
+class TestOfficeDayParsing:
+    """required_office_days reads a stated cadence, or returns None."""
+
+    def test_plain_cadence(self):
+        assert required_office_days("3 days per week in the office") == 3
+        assert required_office_days("Four days a week onsite.") == 4
+
+    def test_office_token_first(self):
+        assert required_office_days("In-office 2 days a week") == 2
+
+    def test_open_ended_counts_as_one_more(self):
+        """'3+' promises no upper bound, so it must fail a cap of 3."""
+        assert required_office_days("3+ days in the office") == 4
+        assert required_office_days("at least 3 days in the office") == 4
+        assert required_office_days("a minimum of 2 days onsite") == 3
+
+    def test_working_week_alone_is_not_a_cadence(self):
+        """The constraint that makes this usable at all.
+
+        Without requiring an office token near the number, '5 days a week'
+        -- the working week itself -- matches nearly every posting written.
+        """
+        assert required_office_days("We work 5 days a week.") is None
+        assert required_office_days("Unlimited PTO after 2 days.") is None
+
+    def test_unstated_is_none(self):
+        assert required_office_days("A fully remote product role.") is None
+        assert required_office_days("") is None
+
+    def test_strictest_stated_cadence_wins(self):
+        """The heaviest week is the one a commute has to absorb."""
+        text = "Normally 2 days in the office, rising to 4 days onsite in Q4."
+        assert required_office_days(text) == 4
+
+    def test_sentence_boundary_is_not_crossed(self):
+        """A number in one sentence must not bind to an office token in the
+        next, or unrelated figures acquire a cadence they never had."""
+        assert required_office_days(
+            "You will have 2 days of onboarding. Our office is in Toronto."
+        ) is None
+
+
+class TestCommuteFiltering:
+    """Hybrid is acceptable, but only within reach and under the cap."""
+
+    @pytest.fixture
+    def pm(self):
+        return load_profile(str(PROFILES_DIR / "product-owner.yml"))
+
+    @staticmethod
+    def _job(**overrides):
+        job = {
+            "id": "ashby_2",
+            "source": "ashby",
+            "company": "Acme",
+            "title": "Product Manager",
+            "location": "Hybrid - Toronto, ON",
+            "workplace_type": "",
+            "content": (
+                "Own the roadmap, run discovery, manage the backlog and"
+                " prioritization with stakeholders."
+            ),
+            "url": "https://example.com/j",
+        }
+        job.update(overrides)
+        return job
+
+    def test_gta_hybrid_is_kept(self, pm):
+        assert track_jobs.process_job_posting(self._job(), pm) is not None
+
+    def test_hybrid_outside_the_gta_is_dropped(self, pm):
+        job = self._job(location="Hybrid - Ottawa, ON")
+        assert track_jobs.process_job_posting(job, pm) is None
+
+    def test_remote_outside_the_gta_is_kept(self, pm):
+        """The commute list must not narrow `regions` for remote roles."""
+        job = self._job(location="Remote - Ottawa, ON")
+        assert track_jobs.process_job_posting(job, pm) is not None
+
+    def test_cadence_over_the_cap_is_dropped(self, pm):
+        job = self._job(content=self._job()["content"] + " 4 days in the office.")
+        assert track_jobs.process_job_posting(job, pm) is None
+
+    def test_cadence_at_the_cap_is_kept(self, pm):
+        job = self._job(content=self._job()["content"] + " 3 days in the office.")
+        match = track_jobs.process_job_posting(job, pm)
+        assert match is not None
+        assert match["office_days"] == 3
+
+    def test_open_ended_cadence_at_the_cap_is_dropped(self, pm):
+        """'3+ days' is not three days."""
+        job = self._job(content=self._job()["content"] + " 3+ days in the office.")
+        assert track_jobs.process_job_posting(job, pm) is None
+
+    def test_unstated_cadence_is_kept(self, pm):
+        """The filter can only act on what the posting says."""
+        match = track_jobs.process_job_posting(self._job(), pm)
+        assert match["office_days"] is None
+
+    def test_commute_checks_are_inert_by_default(self):
+        assert DEFAULT_PROFILE.commutable_regions == []
+        assert DEFAULT_PROFILE.max_office_days_per_week is None
+        assert track_jobs.meets_commute_constraints(
+            "onsite", "Berlin, Germany", "", 5, DEFAULT_PROFILE
+        ) is True
+
+    def test_every_commutable_region_is_also_an_accepted_region(self, pm):
+        """Found live: Markham and Brampton were commutable but not accepted.
+
+        `matches_region` runs first and knows nothing about the commute list,
+        so a REMOTE role advertised from "Markham, ON" was dropped outright --
+        it contains no region term and no wildcard either. Any city close
+        enough to commute to is by definition somewhere the candidate can
+        work.
+        """
+        missing = [
+            c for c in pm.commutable_regions if c not in pm.regions
+        ]
+        assert missing == [], missing
+
+    def test_a_gta_remote_posting_survives_the_region_filter(self, pm):
+        assert matches_region("Markham, ON", "", pm) is True
+        assert matches_region("Brampton, Ontario", "", pm) is True
+
+
+class TestWorkModeFromDescription:
+    """An ATS posting can carry a clean location and bury the cadence in the
+    body, which is where filter 3's inputs actually live."""
+
+    def test_buried_cadence_reclassifies_a_remote_posting(self):
+        """'Toronto, ON' plus '4 days in office' is hybrid, not unknown."""
+        assert detect_work_mode(
+            "Toronto, ON", "", "You will be in the office 4 days a week."
+        ) == "hybrid"
+
+    def test_full_week_cadence_is_onsite(self):
+        assert detect_work_mode(
+            "Toronto, ON", "", "This role is in the office 5 days a week."
+        ) == "onsite"
+
+    def test_hybrid_phrase_in_body_beats_remote_location(self):
+        assert detect_work_mode(
+            "Remote", "", "This is a hybrid role based in Toronto."
+        ) == "hybrid"
+
+    def test_hybrid_technology_is_not_a_work_mode(self):
+        """The reason body text uses a narrower vocabulary than the location.
+
+        A bare 'hybrid' is unambiguous in 'Hybrid - Toronto' but fires on
+        'hybrid cloud' in a description, which would reclassify genuinely
+        remote engineering roles as hybrid and silently drop them.
+        """
+        for text in (
+            "Experience with hybrid cloud architecture is a plus.",
+            "You will build hybrid apps for iOS and Android.",
+            "We run a hybrid database topology.",
+        ):
+            assert detect_work_mode("Remote", "", text) == "remote", text
+
+    def test_explicit_ats_tag_still_wins(self):
+        assert detect_work_mode("Remote", "hybrid", "Fully remote team") == "hybrid"
 
 
 if __name__ == "__main__":

@@ -92,10 +92,7 @@ min_salary:
     USD: 100000
 
 primary_role_keywords:
-    - senior product owner
-    - senior technical product owner
     - technical product owner
-    - senior product manager
     - technical product manager
     - platform product manager
     - healthcare product manager
@@ -104,8 +101,6 @@ primary_role_keywords:
 secondary_role_keywords:
     - product owner
     - platform product owner
-    - lead product owner
-    - product lead
     - ai product manager
     - growth product manager
 
@@ -155,8 +150,43 @@ exclude_title_exact:
     - marketing
     - sales
     - support
+    # Seniority band. The search is for Product Owner / Product Manager only,
+    # so everything above that band is excluded here rather than scored.
+    #
+    # PHRASE-LEVEL ON PURPOSE. A bare "senior" matches "Product Manager,
+    # Senior Living Solutions" -- senior care is the core product vocabulary
+    # at PointClickCare and AlayaCare, both on the board list above. Bare
+    # "staff" would take "Staff Scheduling" and bare "group" would take
+    # "Group Benefits" the same way.
+    #
+    # The comma variants are not redundant: "\bsenior product\b" cannot match
+    # "Senior, Product Management", the same gap that made "svp" need its own
+    # entry above.
+    - senior product
+    - senior, product
+    - senior technical product
+    - senior pm
+    - principal product
+    - principal, product
+    - principal pm
+    - staff product
+    - staff pm
+    - group product manager
+    - lead product
+    - product lead
+    # Safe bare, unlike "senior" and "staff": no product or health-tech noun
+    # contains it, and it also closes a long-standing leak -- "Principal
+    # Engineer, Product Engineering" reaches the generic `product` fallback
+    # and would otherwise be carded as a product role.
+    - principal
+    # Safe bare for a different reason: "sr" is always followed by a period
+    # or a space, both word boundaries. A phrase form would be worse here --
+    # "sr product" cannot match "Sr. Product Manager".
+    - sr
 
-# Director/VP are omitted here because they are excluded above.
+# Unreachable now that the seniority band is excluded by title: every posting
+# that survives the filter lacks all three markers, so this scores 0 for all
+# of them. Kept only to document why `level` is weighted 0 below.
 high_level_keywords:
     - senior
     - lead
@@ -167,12 +197,21 @@ high_level_keywords:
 # expressed was whether the employer chose to publish a range -- which says
 # nothing about role fit and cost every unlisted posting 15 points.
 #
-# signal = domain (premium_signals) + product skills (good_signals), 15 each.
+# `level` is 0 for a different reason: the band filter means every surviving
+# posting scores identically on it, and a bucket with the same value for every
+# candidate cannot rank anything. Its 20 points are redistributed in
+# proportion to the remaining buckets rather than left to cap the channel at
+# 80. The figures below are also chosen so `_scale_to_weight` truncates
+# nothing: role 40 over raw_max 15 and location 20 over raw_max 100 are both
+# exact on every reachable raw value, and signal 35 over raw_max 35 is the
+# identity (it was lossy at 30).
+#
+# signal = domain (premium_signals) + product skills (good_signals).
 score_weights:
-    role: 30
-    level: 20
-    signal: 30
-    location: 15
+    role: 40
+    level: 0
+    signal: 35
+    location: 20
     tools: 5
     salary: 0
 
@@ -250,12 +289,18 @@ work_modes:
 # Matched against the location string and the first 500 characters of the
 # description. Golden Horseshoe + Waterloo region named explicitly, because a
 # posting that says "Burlington, ON" never says "Ontario".
+#
+# The GTA municipalities below are not duplication of `commutable_regions`:
+# without them a REMOTE role advertised from Markham or Brampton fails this
+# filter outright, because "Markham, ON" contains no region term and no
+# wildcard either.
 regions:
     - canada
     - canadian
     - ontario
     - toronto
     - gta
+    - greater toronto
     - oakville
     - burlington
     - mississauga
@@ -263,6 +308,18 @@ regions:
     - kitchener
     - waterloo
     - ottawa
+    - brampton
+    - markham
+    - vaughan
+    - richmond hill
+    - north york
+    - etobicoke
+    - scarborough
+    - milton
+    - pickering
+    - ajax
+    - whitby
+    - oshawa
 
 # Geographies that rule the candidate out. Scored, never filtered, and read
 # from the TITLE and LOCATION only -- country names appear in EEO boilerplate
@@ -293,15 +350,143 @@ region_exclusions:
     - brazil
     - mexico
     - singapore
+    # US metros, which is how these feeds usually write a US-only remote role
+    # ("New York - Remote", "Remote (USA - Boston, MA)"). Spelled out in full:
+    # two-letter codes are unusable here, since "CA" is both California and
+    # Canada. "London" is absent for the same class of reason -- London,
+    # Ontario. A tier-1 allowance still overrides any of these.
+    - new york
+    - nyc
+    - san francisco
+    - bay area
+    - boston
+    - chicago
+    - austin
+    - seattle
+    - denver
+    - atlanta
+    - los angeles
+    - washington dc
+    - miami
+
+# --------------------------------------------------------------------------
+# Canada eligibility. Unlike region_exclusions above, these DO filter -- but
+# only the `excluded` verdict drops a posting. `unclear` passes and is flagged
+# on the card, because silence is the overwhelmingly common case on these
+# feeds and dropping it would leave the channel empty.
+# --------------------------------------------------------------------------
+
+# Tier 1: names Canada as workable. Beats every blocker below -- an employer
+# that says it can hire here has answered the only question being asked, and
+# it does not matter where the job itself is.
+region_allowances:
+    - remote in canada
+    - remote within canada
+    - anywhere in canada
+    - canada remote
+    - canadian remote
+    - open to candidates in canada
+    - hire in canada
+    - hiring in canada
+    - entity in canada
+    # Bare "north america" is deliberately absent. It is a market, not a
+    # hiring claim -- sales postings say it constantly -- and as a tier-1
+    # allowance it badged "New York - Remote" and "Spain - Remote" as
+    # Canada-eligible. Only the explicit forms qualify.
+    - anywhere in north america
+    - remote in north america
+    - across north america
+
+# Tier 2: global-sounding, but silent on Canada specifically. These PASS and
+# report `unclear`, never `eligible`. "Work from anywhere" routinely means
+# "anywhere we already run payroll", and treating it as a promise would
+# repeat exactly the mistake of reading a bare "Remote" as Canada-eligible.
+region_global_claims:
+    - work from anywhere
+    - fully remote globally
+    - globally remote
+    - hire anywhere in the world
+    - work from any location
+    - anywhere in the world
+
+# Complete phrases only. Bare "us" fires on "join us", and "u.s." can never
+# match at all -- re.escape makes it `u\.s\.` and a trailing \b needs a
+# following word character.
+region_blockers:
+    - must reside in the united states
+    - must be located in the united states
+    - must be based in the united states
+    - residing in the united states
+    - united states only
+    - us-based only
+    - this role is us-based
+    - usa only
+    - uk only
+    - must be a uk resident
+
+# Residency stems, each read together with the ~60 characters that follow it.
+# The stem alone decides nothing: "must reside in Canada" and "must reside in
+# the United States" are the same phrase up to the place name. A window
+# naming an accepted region wins outright, so a posting listing several
+# countries passes as long as Canada is one of them; a window naming nowhere
+# recognisable is left unclear rather than treated as disqualifying.
+#
+# Every stem must constrain the CANDIDATE. A bare "based in" is excluded for
+# exactly this reason: "a company based in the United States" describes the
+# employer's head office and says nothing about where it can hire, so using
+# it would drop the US-headquartered firms that staff Toronto offices.
+residency_markers:
+    - must reside in
+    - must live in
+    - must be located in
+    - must be based in
+    - must be a resident of
+    - must be physically located in
+    - candidates must be located in
+    - required to reside in
+    - this role is based in
+    - authorized to work in
 
 # EOR is irrelevant for a Canada-based search against Canadian employers.
 require_eor: false
 
-# Lowered from 50. A plain "Product Manager" title scores 0 for level (no
-# senior/lead/principal keyword) and 5 for an unlisted salary, so its ceiling
-# is role 15 + salary 5 + signal 35 = 55. At 50 it needed a near-perfect
-# signal sweep just to get a card. 35 clears it on ~3 premium signals.
-alert_threshold: 35
+# Commute reach. Applies ONLY to postings detected as hybrid or onsite, so a
+# fully remote role in Vancouver or Ottawa is unaffected -- which is why this
+# is a separate list from `regions` rather than a narrowing of it.
+commutable_regions:
+    - toronto
+    - gta
+    - greater toronto
+    - mississauga
+    - brampton
+    - markham
+    - vaughan
+    - richmond hill
+    - north york
+    - etobicoke
+    - scarborough
+    - oakville
+    - burlington
+    - milton
+    - pickering
+    - ajax
+    - whitby
+    - oshawa
+
+# Hybrid is acceptable up to three days in the office. A posting that states
+# no cadence is kept: this can only act on what the description actually says.
+# Open-ended wording ("3+ days", "at least 3 days") counts as four, since it
+# promises no upper bound at all.
+max_office_days_per_week: 3
+
+# Rescaled with the weights above. The old 35 was set against a reachable
+# ceiling of 80; zeroing `level` and redistributing its 20 points lifts that
+# ceiling to 100, so the same relative bar is 35/80 * 100 ~= 44. Leaving it at
+# 35 would card nearly everything.
+#
+# Worked example at the new weights: a plain "Product Manager" in Toronto
+# with three premium signals scores role 40 + signal 21 + location 20 = 81.
+alert_threshold: 45
 
 outreach_note_template: >-
     Hi [Name], saw the {title} opening at {company} and wanted to connect
