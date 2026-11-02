@@ -124,7 +124,6 @@ boards:
         - later
         # Sports Tech
         - hudl # StatsBomb was acquired by Hudl
-        - sportradar
         - geniussports
         - fanduel
         - catapultsports

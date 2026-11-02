@@ -30,6 +30,14 @@ jobs:
             - name: Check out Repository
               uses: actions/checkout@v4
 
+            - name: Restore Board Health State Cache
+              uses: actions/cache/restore@v4
+              with:
+                  path: .board-health-state
+                  key: board-health-state-${{ github.run_id }}
+                  restore-keys: |
+                      board-health-state-
+
             - name: Set up Python
               uses: actions/setup-python@v5
               with:
@@ -41,5 +49,15 @@ jobs:
 
             - name: Probe Every Configured Board
               run: |
+                  mkdir -p .board-health-state
                   python check_boards.py \
+                    --empty-state-file .board-health-state/empty_streaks.json \
+                    --empty-streak-threshold 3 \
                     ${{ inputs.fail_on_empty && '--fail-on-empty' || '' }}
+
+            - name: Save Board Health State Cache
+              if: always()
+              uses: actions/cache/save@v4
+              with:
+                  path: .board-health-state
+                  key: board-health-state-${{ github.run_id }}

@@ -377,11 +377,27 @@ exits non-zero if any are dead:
 python check_boards.py                        # every profile
 python check_boards.py --profile profiles/engineering.yml
 python check_boards.py --fail-on-empty        # also flag 0-posting boards
+python check_boards.py \
+  --empty-state-file .board-health-state/empty_streaks.json \
+  --empty-streak-threshold 3
 ```
 
 The **Board Health Check** workflow runs it monthly, and on demand from the
-Actions tab. It is kept out of the unit suite on purpose: it makes live calls,
-and an ATS hiccup should not turn the normal test run red.
+Actions tab. It also persists EMPTY streaks between runs and reports
+`PERSISTENT_EMPTY` boards when a slug has returned HTTP 200 with no postings
+for 3 consecutive checks. It is kept out of the unit suite on purpose: it
+makes live calls, and an ATS hiccup should not turn the normal test run red.
+
+### Monthly Board Expansion Cadence
+
+Use this lightweight monthly loop to keep coverage broad without adding noise:
+
+1. Export candidate companies from your target domains (10-20 names).
+2. Probe each candidate across ATSes and keep only slugs that are HTTP 200 and non-empty.
+3. Add validated slugs to exactly one ATS list in the relevant profile.
+4. Run `python check_boards.py` and fix any `DEAD` entries before merging.
+5. Keep `EMPTY` slugs for now, but prune candidates that remain in `PERSISTENT_EMPTY` for multiple months.
+6. Run `python track_jobs.py --profile <profile.yml>` and review the new runtime yield summary by source/company.
 
 ## Monitoring & Logs
 

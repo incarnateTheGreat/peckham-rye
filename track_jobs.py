@@ -7,6 +7,7 @@ import os
 import re
 import time
 import zoneinfo
+from collections import Counter
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
@@ -263,7 +264,7 @@ class SearchProfile:
               # Canadian employers
               "hootsuite", "later",
               # Sports Tech
-              "hudl", "sportradar", "geniussports", "fanduel",
+              "hudl", "geniussports", "fanduel",
               "catapultsports", "zwift", "peloton",
               # Aviation/Aerospace/Flight
               "archer", "rocketlab", "relativity", "astranis", "flyzipline",
@@ -2189,6 +2190,34 @@ def collect_matches(
   return matches
 
 
+def log_yield_summary(matches: list[dict]) -> None:
+  """Print per-source and per-company match yield for this run."""
+  if not matches:
+    print("Yield summary: 0 new matching roles")
+    return
+
+  source_counts = Counter(m.get("source") or "unknown" for m in matches)
+  company_counts = Counter(m.get("company") or "Unknown" for m in matches)
+
+  print("Yield by source:")
+  for source, count in sorted(source_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+    print(f"  {source:12} {count}")
+
+  print("Top company yield:")
+  for company, count in company_counts.most_common(15):
+    print(f"  {company:28} {count}")
+
+
+def log_source_coverage(profile: SearchProfile) -> None:
+  """Show how much configured coverage each enabled source has."""
+  print("Configured source coverage:")
+  for source in profile.sources:
+    if source in profile.boards:
+      print(f"  {source:12} {len(profile.boards.get(source, []))} board(s)")
+    else:
+      print(f"  {source:12} aggregator")
+
+
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
@@ -2202,6 +2231,7 @@ def main():
 
     profile = load_profile(args.profile)
     print(f"Running profile: {profile.name}")
+    log_source_coverage(profile)
 
     if not get_webhook_url(profile):
         print(
@@ -2213,6 +2243,7 @@ def main():
     seen_jobs = load_seen_jobs(profile.name)
 
     all_matches = collect_matches(seen_jobs, profile)
+    log_yield_summary(all_matches)
 
     if all_matches:
         print(f"Found {len(all_matches)} new matching roles. Dispatching alerts...")

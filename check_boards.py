@@ -23,6 +23,7 @@ Exit status:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -48,6 +49,48 @@ UNREACHABLE = "UNREACHABLE"
 MALFORMED = "MALFORMED"
 EMPTY = "EMPTY"
 OK = "OK"
+PERSISTENT_EMPTY = "PERSISTENT_EMPTY"
+
+
+def _board_key(source: str, slug: str) -> str:
+  return f"{source}/{slug}"
+
+
+def load_empty_streaks(path: Path) -> dict[str, int]:
+  """Load prior EMPTY streak counters from disk."""
+  if not path.exists():
+    return {}
+  try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return {}
+
+  if not isinstance(data, dict):
+    return {}
+  streaks = {}
+  for key, value in data.items():
+    if isinstance(key, str) and isinstance(value, int) and value >= 0:
+      streaks[key] = value
+  return streaks
+
+
+def save_empty_streaks(path: Path, streaks: dict[str, int]) -> None:
+  """Persist EMPTY streak counters for the next run."""
+  path.parent.mkdir(parents=True, exist_ok=True)
+  payload = json.dumps(streaks, indent=2, sort_keys=True)
+  path.write_text(payload + "\n", encoding="utf-8")
+
+
+def next_empty_streaks(
+    previous: dict[str, int],
+    results: list[tuple[str, str, str, str]],
+) -> dict[str, int]:
+  """Advance per-board EMPTY streaks based on current outcomes."""
+  current: dict[str, int] = {}
+  for source, slug, outcome, _ in results:
+    key = _board_key(source, slug)
+    current[key] = previous.get(key, 0) + 1 if outcome == EMPTY else 0
+  return current
 
 
 def classify(status_code: int | None, job_count: int | None) -> tuple[str, str]:
@@ -125,6 +168,19 @@ def main() -> int:
       action="store_true",
       help="Treat a live board with zero postings as a failure too.",
   )
+  parser.add_argument(
+      "--empty-state-file",
+      help=(
+          "Optional JSON file that stores consecutive EMPTY streaks by"
+          " board between runs."
+      ),
+  )
+  parser.add_argument(
+      "--empty-streak-threshold",
+      type=int,
+      default=3,
+      help="Report boards that have been EMPTY this many runs in a row.",
+  )
   args = parser.parse_args()
 
   paths = (
@@ -157,6 +213,26 @@ def main() -> int:
     for source, slug, detail in sorted(entries):
       owners = ", ".join(boards[(source, slug)])
       print(f"  {source:11} {slug:24} {detail:28} [{owners}]")
+    print()
+
+  persistent_empty = []
+  if args.empty_state_file:
+    state_path = Path(args.empty_state_file)
+    previous = load_empty_streaks(state_path)
+    streaks = next_empty_streaks(previous, results)
+    save_empty_streaks(state_path, streaks)
+
+    for source, slug, outcome, _ in results:
+      key = _board_key(source, slug)
+      streak = streaks.get(key, 0)
+      if outcome == EMPTY and streak >= max(args.empty_streak_threshold, 1):
+        persistent_empty.append((source, slug, streak))
+
+  if persistent_empty:
+    print(f"{PERSISTENT_EMPTY} (>= {args.empty_streak_threshold} runs) ({len(persistent_empty)})")
+    for source, slug, streak in sorted(persistent_empty):
+      owners = ", ".join(boards[(source, slug)])
+      print(f"  {source:11} {slug:24} {streak:>2} empty runs in a row [{owners}]")
     print()
 
   ok_count = len(grouped.get(OK, []))
